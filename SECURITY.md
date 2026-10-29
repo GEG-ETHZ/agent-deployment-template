@@ -9,7 +9,7 @@ the template ship their own `SECURITY.md` covering their runtime behaviour.
 **Do not open a public GitHub issue for anything exploitable.**
 
 Report it privately through
-[GitHub Security Advisories](https://github.com/danielvogler/agent-deployment-template/security/advisories/new).
+[GitHub Security Advisories](https://github.com/GEG-ETHZ/agent-deployment-template/security/advisories/new).
 
 We aim to respond within 5 business days and to release a fix within 30 days for critical
 issues.
