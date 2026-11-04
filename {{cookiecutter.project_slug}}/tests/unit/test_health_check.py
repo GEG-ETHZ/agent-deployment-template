@@ -56,6 +56,13 @@ def test_run_smoke_test_queries_a_session_created_in_a_separate_call():
     assert remote_agent.stream_query.call_args.kwargs["session_id"] == SESSION_ID
 
 
+@pytest.fixture(autouse=True)
+def no_sleep():
+    """check_resource waits between attempts; tests must not."""
+    with patch("deployment.scripts.health_check.time.sleep") as sleep:
+        yield sleep
+
+
 @pytest.fixture
 def deployed_resource_env(monkeypatch):
     """Env for a project that already has a deployed Agent Engine resource."""
@@ -128,3 +135,49 @@ def test_check_resource_forwards_message_and_user_id(deployed_resource_env):
     remote_agent.stream_query.assert_called_once_with(
         message="custom message", user_id="custom-user", session_id=SESSION_ID
     )
+
+
+def test_check_resource_retries_until_the_agent_answers(
+    deployed_resource_env, no_sleep
+):
+    """A fresh agent identity's grants take a minute or two to propagate, so the
+    first queries can fail with PermissionDenied before the agent works."""
+    remote_agent = make_remote_agent([{"type": "final_response"}])
+    remote_agent.stream_query.side_effect = [
+        PermissionError("aiplatform.endpoints.predict denied"),
+        iter([{"type": "final_response"}]),
+    ]
+
+    with (
+        patch("vertexai.init"),
+        patch("vertexai.agent_engines.get", return_value=remote_agent),
+    ):
+        assert (
+            check_resource("ping", "health-check", attempts=3, retry_delay_s=5) is True
+        )
+
+    assert remote_agent.stream_query.call_count == 2
+    no_sleep.assert_called_once_with(5)
+
+
+def test_check_resource_gives_up_after_the_last_attempt(
+    deployed_resource_env, no_sleep
+):
+    remote_agent = make_remote_agent([])
+
+    with (
+        patch("vertexai.init"),
+        patch("vertexai.agent_engines.get", return_value=remote_agent),
+    ):
+        assert (
+            check_resource("ping", "health-check", attempts=3, retry_delay_s=5) is False
+        )
+
+    assert remote_agent.stream_query.call_count == 3
+    # No wait after the final attempt: nothing follows it.
+    assert no_sleep.call_count == 2
+
+
+def test_check_resource_rejects_fewer_than_one_attempt(deployed_resource_env):
+    with pytest.raises(ValueError, match="attempts"):
+        check_resource("ping", "health-check", attempts=0)
