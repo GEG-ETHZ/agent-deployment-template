@@ -52,13 +52,16 @@ in the GCP project: a Workload Identity pool `github-actions` with a provider `g
 principal's upload fails with 412 otherwise).
 
 1. `cruft update`, then `make setup-gcp ENV=dev` to create the state bucket.
-2. `make deploy-dev`. OpenTofu creates the new engine and its grants, then the code is
+2. Move every grant the agent relied on through `agent-engine-sa` beyond model, trace and log
+   access into a project-owned file such as `infra/agent/data_access.tf` (see "Adding
+   permissions for this agent" in the generated `AGENTS.md`). The new identity inherits nothing.
+3. `make deploy-dev`. OpenTofu creates the new engine and its grants, then the code is
    shipped to it. Repeat with `ENV=prod`.
-3. Set the repository variables `GCP_WORKLOAD_IDENTITY_PROVIDER` (printed by `setup_gcp.sh`)
+4. Set the repository variables `GCP_WORKLOAD_IDENTITY_PROVIDER` (printed by `setup_gcp.sh`)
    and `GOOGLE_CLOUD_PROJECT`; delete the secrets `GCP_SA_KEY` and `GOOGLE_CLOUD_PROJECT`, and
    the variables `AGENT_ENGINE_RESOURCE_NAME` and `AGENT_ENGINE_SERVICE_ACCOUNT`.
-4. Point API consumers at the new engine, then delete the old one by hand.
-5. Leave `agent-engine-sa` in place while other projects still use it; delete any key file
+5. Point API consumers at the new engine, then delete the old one by hand.
+6. Leave `agent-engine-sa` in place while other projects still use it; delete any key file
    minted for it.
 
 ## [2.1.0] - 2026-09-24

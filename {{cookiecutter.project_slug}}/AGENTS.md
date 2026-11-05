@@ -204,9 +204,79 @@ gcloud projects get-iam-policy $GOOGLE_CLOUD_PROJECT --project=$GOOGLE_CLOUD_PRO
   --format='value(bindings.members)'
 ```
 
-A tool that needs more (a bucket, a secret) gets it by adding to that module, not to a shared
-account. The grants use `google_project_iam_member`, never `_binding` or `_policy`, which would
-strip every other grant on the role or the project.
+#### Adding permissions for this agent
+
+A tool that needs more (a BigQuery dataset, a bucket, a secret) gets it from a file of this
+project's own in `infra/agent/`, for example `infra/agent/data_access.tf`. Do not edit
+`main.tf`, `ci.tf` or the `roles` default in `variables.tf`: the template owns those files, so
+every `cruft update` would conflict with the edit. A file the template never ships is left alone
+by every update, and OpenTofu reads every `.tf` file in the directory, so it applies with the
+rest on the next `make infra-apply`.
+
+Grant to the two principals the module already defines, and scope each grant to the resource
+rather than the project where the resource type allows it:
+
+| Local | Who it is | Use it for |
+|---|---|---|
+| `local.agent_principal` | The deployed agent at runtime (its Agent Identity) | Data and secrets the tools read when serving a request |
+| `local.ci_principal` | The GitHub repository, signed in through Workload Identity Federation | Anything `deploy.yml` itself has to reach; `null` when `github_repository` is empty |
+
+```hcl
+# infra/agent/data_access.tf -- project-owned; the template does not ship this file.
+
+locals {
+  dvc_buckets = ["my-dvc-remote-bucket"]
+}
+
+resource "google_storage_bucket_iam_member" "data" {
+  for_each = toset(local.dvc_buckets)
+  bucket   = each.value
+  role     = "roles/storage.objectViewer"
+  member   = local.agent_principal
+}
+
+resource "google_bigquery_dataset_iam_member" "data" {
+  project    = var.project_id
+  dataset_id = "my_dataset"
+  role       = "roles/bigquery.dataViewer"
+  member     = local.agent_principal
+}
+
+# Running queries is a project-level permission: there is no per-dataset jobUser.
+resource "google_project_iam_member" "bigquery_jobs" {
+  project = var.project_id
+  role    = "roles/bigquery.jobUser"
+  member  = local.agent_principal
+}
+
+resource "google_secret_manager_secret_iam_member" "git_token" {
+  project   = var.project_id
+  secret_id = "git_auth_token"
+  role      = "roles/secretmanager.secretAccessor"
+  member    = local.agent_principal
+}
+
+# Only if CI needs more than ci.tf grants; count keeps it off without a repository.
+resource "google_storage_bucket_iam_member" "ci_artifacts" {
+  count  = local.ci_enabled ? 1 : 0
+  bucket = "my-ci-artifact-bucket"
+  role   = "roles/storage.objectViewer"
+  member = local.ci_principal
+}
+```
+
+- **Use `_iam_member`, never `_iam_binding` or `_iam_policy`.** Those are authoritative: they
+  remove every other member of the role, or every other grant on the resource, including the
+  grants of sibling agents and of people.
+- **Resources in another project** take that project's id in `project`; the person running
+  `make infra-apply` then needs IAM rights there too.
+- **The grants follow the engine.** Re-creating it (a new `region`, a `tofu destroy`) changes
+  `local.agent_principal`; the next apply grants the new principal and removes the old one's
+  grants, so nothing is left behind on a principal that no longer exists.
+- **Test it in a file of its own**, for example `infra/agent/tests/data_access.tftest.hcl`:
+  `agent.tftest.hcl` is a template file too. Copy its `mock_provider` blocks, which every test
+  file needs, and assert each grant's member and role, so `make infra-test` catches a grant that
+  went to the wrong principal.
 
 The order is fixed, and `make deploy-*` runs it:
 
@@ -246,12 +316,16 @@ curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
 > agent as `agent-engine-sa`, on an engine `deploy.py` created. After a `cruft update`:
 >
 > 1. `make setup-gcp ENV=<env>` creates the OpenTofu state bucket.
-> 2. `make infra-import ENV=<env> ENGINE=<your AGENT_ENGINE_RESOURCE_NAME>` adopts the engine.
->    Skip this to get a new engine instead; the old one then has to be deleted by hand.
-> 3. `make deploy-<env>` moves the engine onto its own Agent Identity, grants its roles and
->    ships the code. Then remove `AGENT_ENGINE_RESOURCE_NAME` from `.env`.
+> 2. Move every permission the agent got through `agent-engine-sa` beyond model, trace and log
+>    access (datasets, buckets, secrets) into a file of your own; see "Adding permissions for
+>    this agent" above. The new identity inherits nothing.
+> 3. `make deploy-<env>` creates a new engine with its own Agent Identity, grants its roles and
+>    ships the code. Then remove `AGENT_ENGINE_RESOURCE_NAME` from `.env`, point API consumers
+>    at the new engine and delete the old one by hand.
 >
-> `agent-engine-sa` itself is left in place: other deployments may still use it.
+> Adopting the old engine with `make infra-import` instead, to keep its ID, is untested: whether
+> an existing engine can switch from a service account to Agent Identity in place is not
+> confirmed. `agent-engine-sa` itself is left in place: other deployments may still use it.
 
 ### Monitoring & alerting
 
