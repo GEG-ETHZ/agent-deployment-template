@@ -47,7 +47,7 @@
       <rect x="324" y="160" width="18" height="4" rx="2" fill="#34A853"/>
     </g>
 
-    <text x="257" y="203" font-size="22" fill="#9AA0A6">An ADK agent that runs as its own service account,</text>
+    <text x="257" y="203" font-size="22" fill="#9AA0A6">An ADK agent with its own Agent Identity,</text>
     <text x="257" y="233" font-size="22" fill="#9AA0A6">and logs and traces every tool call it makes.</text>
 
     <text x="257" y="270" font-size="14" letter-spacing="0.3" fill="#80868B">Google ADK · Agent Engine · Cloud Logging · Cloud Trace · promptfoo · uv</text>

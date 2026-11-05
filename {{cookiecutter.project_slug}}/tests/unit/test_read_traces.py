@@ -147,7 +147,7 @@ def test_main_explains_an_empty_result(monkeypatch, capsys):
     )
 
     assert main([]) == 0
-    assert "CLOUD_TRACE_ENABLED" in capsys.readouterr().out
+    assert "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY" in capsys.readouterr().out
 
 
 # --- --spans: tool spans are children of ADK's root span ---------------------

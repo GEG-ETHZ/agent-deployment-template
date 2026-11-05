@@ -40,6 +40,7 @@ validate:
 	cd /tmp/cc-validate/test-agent && uv run ruff format --check .
 	cd /tmp/cc-validate/test-agent && uv run pytest tests/unit -v --no-cov
 	cd /tmp/cc-validate/test-agent && uv run pytest tests/integration -v --tb=short --no-cov
+	cd /tmp/cc-validate/test-agent && make infra-test
 	@echo ""
 	@echo "Template validation passed."
 	rm -rf /tmp/cc-validate

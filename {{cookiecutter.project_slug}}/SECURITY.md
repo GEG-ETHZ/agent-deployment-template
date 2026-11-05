@@ -46,4 +46,6 @@ To acknowledge a false-positive CVE, add a comment `# audit-ignore: CVE-YYYY-XXX
 - Never commit `.env` files — they are gitignored
 - Use `detect-secrets` (pre-commit hook) to prevent accidental credential commits
 - In CI, secrets are stored as GitHub repository secrets and never printed to logs
-- GCP authentication uses a service account key stored as `GCP_SA_KEY` secret — rotate it annually or immediately if compromised
+- The deployed agent runs under its own Agent Identity, which holds only the roles granted in `infra/agent/`; it has no key to leak
+- Local deploys use the deployer's own Application Default Credentials; no key file is involved
+- CI deploys authenticate through Workload Identity Federation: each run's short-lived GitHub OIDC token is exchanged for GCP credentials, so no key is stored in GitHub. The repository holds only the grants in `infra/agent/ci.tf`; restrict who can deploy to `prod` with GitHub environment protection rules

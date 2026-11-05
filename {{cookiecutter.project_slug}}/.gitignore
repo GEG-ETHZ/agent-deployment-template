@@ -48,6 +48,14 @@ htmlcov/
 # Ruff
 .ruff_cache/
 
+# OpenTofu (infra/). The lock file is committed; state lives in the GCS backend, and a
+# local state file or plan would hold the project's IAM layout.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+
 # Pre-commit
 .pre-commit-cache/
 

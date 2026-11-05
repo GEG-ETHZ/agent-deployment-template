@@ -42,8 +42,13 @@ For GCP deployment (one-time):
 gcloud auth login
 gcloud auth application-default login
 
-make setup-gcp   # creates SA, enables APIs, generates key for CI
+make setup-gcp ENV=dev   # enables APIs, creates the staging and OpenTofu state buckets
+make deploy-dev          # OpenTofu: engine, identity, roles; then ship the code; health-check
 ```
+
+Deploying also needs [OpenTofu](https://opentofu.org) (`tofu` ≥ 1.8) on your path, and an
+account that may change project IAM (`roles/resourcemanager.projectIamAdmin` or owner), because
+OpenTofu grants the agent's identity its roles.
 
 ### Make targets (use these, not raw commands)
 
@@ -58,8 +63,12 @@ make setup-gcp   # creates SA, enables APIs, generates key for CI
 | `make format` | ruff format |
 | `make typecheck` | pyright |
 | `make pre-commit` | All pre-commit hooks |
-| `make deploy-dev` | Deploy to Agent Engine (dev) |
-| `make deploy-prod` | Deploy to Agent Engine (prod) |
+| `make deploy-dev` | Apply `infra/agent/` (engine, Agent Identity, roles), ship the code to that engine, health-check it |
+| `make deploy-prod` | Same, for prod |
+| `make infra-apply ENV=dev\|prod` | Create or update the engine and its grants only (OpenTofu, `infra/agent/`) |
+| `make infra-import ENV=dev\|prod ENGINE=<name>` | One-time: bring an engine created outside OpenTofu under its state |
+| `make deploy-code ENV=dev\|prod` | Ship the code to the existing engine and health-check it, without applying — what `deploy.yml` runs |
+| `make infra-test` | OpenTofu fmt, validate and tests — offline, mocked provider |
 | `make rollback REF=<tag> [ENV=prod\|dev]` | Redeploy a previous git ref against the existing Agent Engine resource |
 | `make health-check` | Standalone smoke test against the deployed Agent Engine resource (no fresh deploy) |
 | `make logs` | Read this agent's Cloud Logging entries |
@@ -92,10 +101,11 @@ Set `MODEL_PROVIDER` in `.env`:
 | `GOOGLE_CLOUD_PROJECT` | Deploy only | — | GCP project ID |
 | `GOOGLE_CLOUD_LOCATION` | Deploy only | `europe-west1` | Vertex AI region |
 | `GCS_STAGING_BUCKET` | No | `gs://$GOOGLE_CLOUD_PROJECT-agent-staging` | Override only if you renamed the bucket; the `gs://` scheme is optional |
-| `AGENT_ENGINE_RESOURCE_NAME` | No | — | Existing resource to update (omit = create new) |
-| `AGENT_ENGINE_SERVICE_ACCOUNT` | No | `agent-engine-sa@$GOOGLE_CLOUD_PROJECT…` | Override only if you renamed the SA — see [Runtime identity](#runtime-identity) |
-| `CLOUD_TRACE_ENABLED` | No | off | Export a Cloud Trace span per tool call; `deploy.py` sets it on the deployed agent |
-| `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID` | With tracing | — | Project the span exporter writes to; `deploy.py` sets it from `GOOGLE_CLOUD_PROJECT` |
+| `AGENT_ENGINE_RESOURCE_NAME` | Standalone `health-check` / `deploy.py` only | — | Engine to query or update. `make deploy-*` and `make rollback` set it from the OpenTofu output, so it does not belong in `.env` |
+| `STATE_BUCKET` | No | `$GOOGLE_CLOUD_PROJECT-agents-state` | OpenTofu state bucket shared by every agent of the project |
+| `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` | No | — | `deploy.py` sets `true` on the deployed agent: Agent Engine's built-in tracing |
+| `CLOUD_TRACE_ENABLED` | No | off | Our own span exporter, for local runs only — it fails under Agent Identity (see Observability) |
+| `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID` | With `CLOUD_TRACE_ENABLED` | — | Project our span exporter writes to |
 | `MODEL_PROVIDER` | No | `google` | Provider selection |
 | `LITELLM_MODEL` | If provider=litellm | — | Full LiteLLM model string |
 | `ANTHROPIC_API_KEY` | If provider=anthropic | — | |
@@ -109,24 +119,27 @@ Set `MODEL_PROVIDER` in `.env`:
 `deployment/scripts/health_check.py` creates a session on the Agent Engine resource named by
 `AGENT_ENGINE_RESOURCE_NAME`, sends a message to it in a second request, and requires at least
 one event back, following the same two-request path as the console playground and real clients.
-`deploy.py` runs this smoke test right after deploying; it also runs standalone against an
-already-deployed resource:
+It tries up to six times, 20 seconds apart (`--attempts` changes the count), because new role
+grants take a minute or two to take effect. `make deploy-*` runs it last, once the code is live;
+`deploy.py` itself does not query the agent. It also runs standalone against an already-deployed
+resource:
 
 ```bash
-make health-check                                                    # uses .env
+AGENT_ENGINE_RESOURCE_NAME="$(tofu -chdir=infra/agent output -raw agent_resource_name)" \
+  make health-check                                                  # after make infra-init ENV=<env>
 uv run python deployment/scripts/health_check.py --message "hello"   # customize the ping
 ```
 
 Exits `0` on success, `1` on failure, so it's safe to gate CI or a cron job on. `deploy.yml` runs
-it as its own step right after deploying, reading the resource name from `.agent_engine_resource`
-so it works whether that deploy created a new resource or updated an existing one.
+it as its own step right after deploying, reading the resource name from `.agent_engine_resource`,
+which `deploy.py` writes.
 
 ### Rollback
 
-Agent Engine deploys are **source-based** (`agent_engines.create`/`update` pickles `root_agent`
-directly) — there is no container image digest to pin a rollback to. Rolling back means checking
-out a previous git ref and redeploying it against the *existing* `AGENT_ENGINE_RESOURCE_NAME`,
-which `deploy.py` updates in place rather than creating a new resource.
+Agent Engine deploys are **source-based** (`agent_engines.update` pickles `root_agent` directly)
+— there is no container image digest to pin a rollback to. Rolling back means checking out a
+previous git ref and redeploying its code to the *existing* engine from the OpenTofu state, which
+`deploy.py` updates in place.
 
 **Locally:**
 
@@ -135,8 +148,10 @@ make rollback REF=v1.2.0                # redeploys v1.2.0 to prod
 make rollback REF=v1.2.0 ENV=dev        # redeploys v1.2.0 to dev
 ```
 
-This checks out `REF`, runs `deployment/deploy.py --env <ENV>`, and restores your original branch
-afterwards regardless of whether the deploy succeeds.
+This reads the engine name from the `<ENV>` OpenTofu state, checks out `REF`, runs
+`deployment/deploy.py --env <ENV>` against that engine, restores your original branch afterwards
+regardless of whether the deploy succeeds, and then runs the health check. It does not apply
+OpenTofu: the engine, its identity and its grants stay as they are.
 
 **Via GitHub Actions:** manually trigger the `deploy.yml` workflow (Actions tab → Deploy → Run
 workflow) and set the `ref` input to the tag, branch, or SHA you want to roll back to, alongside
@@ -147,63 +162,170 @@ you want to verify a rollback worked without triggering another deploy.
 
 ### Runtime identity
 
-Two identities are involved in a deploy, and they are not the same thing:
+Two identities are involved in a deploy:
 
 | Identity | What it is |
 |---|---|
-| The **deployer** | Whoever runs `deploy.py` — your user account locally, or `agent-engine-sa` via `GCP_SA_KEY` in `deploy.yml` |
-| The **runtime** | Whoever the deployed agent runs *as* when it serves a request |
+| The **deployer** | Whoever runs `make deploy-*`: your own account, through Application Default Credentials |
+| The **runtime** | Whoever the deployed agent runs *as* when it serves a request: its own **Agent Identity** |
 
-`agent_engines.create`/`update` accept a `service_account` parameter, and **if it is omitted the
-runtime is the project's shared Reasoning Engine Service Agent**
-(`service-<PROJECT_NUMBER>@gcp-sa-aiplatform-re...`), not the SA `setup_gcp.sh` creates. An
-earlier version of this template omitted it, which made the least-privilege story in these docs
-untrue: `agent-engine-sa`'s grants applied only to the *caller* of `deploy.py`, while the actual
-runtime permissions came from a service agent nobody had configured.
+`infra/agent/` (OpenTofu) creates the engine with `spec.identity_type = "AGENT_IDENTITY"` and no
+code. That is enough for Vertex AI to give that one agent its own IAM principal, derived from its
+resource name:
 
-`deploy.py` now always passes a `service_account`. You do not configure it: the SA name is fixed
-by `setup_gcp.sh`, so `DeploymentConfig` derives `agent-engine-sa@$GOOGLE_CLOUD_PROJECT` from the
-project id. `AGENT_ENGINE_SERVICE_ACCOUNT` exists only to override that if you renamed the SA. The
-staging bucket is derived the same way, for the same reason.
-
-> **Upgrading an existing project — breaking.** A project generated before this change deploys
-> with no `service_account`, so its agent runs as the shared service agent. After a `cruft update`
-> it starts passing one, and the next deploy fails with `PermissionDenied` on `actAs` until the
-> binding below exists.
->
-> **Migration:** re-run `make setup-gcp ENV=<env>` before your next deploy — it adds the binding
-> and is safe to re-run. Note the first deploy afterwards also *changes the running agent's
-> identity*, so confirm the SA holds the roles the agent needs at runtime.
->
-> Setting `AGENT_ENGINE_SERVICE_ACCOUNT=""` is not an escape hatch — an empty value falls back to
-> the derived SA. To stay on the old behaviour, pin the template to the previous version instead
-> of updating.
-
-#### The actAs prerequisite
-
-Passing a real runtime identity makes an IAM permission real too: whoever deploys needs
-`roles/iam.serviceAccountUser` **on that service account** for Vertex to accept it. The old
-behaviour needed none, because it never passed a service account at all.
-
-`setup_gcp.sh` grants it to two principals, which covers both normal deploy paths:
-
-| Principal | Why |
-|---|---|
-| `agent-engine-sa` itself | how CI authenticates (`GCP_SA_KEY` in `deploy.yml`) |
-| whoever runs the bootstrap | the likely local deployer — picked up from `gcloud config get-value account` |
-
-Teammates who also deploy from their own machines need adding by hand:
-
-```bash
-gcloud iam service-accounts add-iam-policy-binding agent-engine-sa@$GOOGLE_CLOUD_PROJECT.iam.gserviceaccount.com \
-  --member="user:them@example.com" --role=roles/iam.serviceAccountUser --project=$GOOGLE_CLOUD_PROJECT
+```text
+principal://agents.global.org-<ORG_ID>.system.id.goog/resources/aiplatform/projects/<PROJECT_NUMBER>/locations/<LOCATION>/reasoningEngines/<ENGINE_ID>
 ```
 
-Without the grant, the failure is a `PermissionDenied` on `actAs` that arrives *after* the agent
-has been pickled and uploaded — so if you see that mid-deploy, this is why.
+The API reports the same value, without the scheme, as the resource's `spec.effectiveIdentity`;
+OpenTofu reads it from there and grants roles to it, so the principal is never assembled by hand.
+Without `identity_type`, the agent would run as the project's shared Reasoning Engine Service
+Agent, which every agent in the project shares. `deploy.py` sends the same `identity_type` with
+every code update, so a deploy cannot move the agent off its identity either.
 
-To check what a deployed resource actually runs as, read its `serviceAccount` field — `(none set)`
-means it is on the shared service agent.
+**Where the identity's permissions come from:**
+
+| Grant | Who sets it | Covers |
+|---|---|---|
+| `roles/aiplatform.agentDefaultAccess` (ALPHA) on `principalSet://agents.global.org-<ORG_ID>.system.id.goog/attribute.platformContainer/aiplatform/projects/<PROJECT_NUMBER>` | Google, automatically, when the first agent with Agent Identity is created in the project | Every Agent Engine agent in the project: model calls (`aiplatform.endpoints.predict`), traces, log entries, metrics |
+| `roles/cloudtrace.agent` on this agent's principal | `infra/agent/` | Export spans (`agent/observability.py`) |
+| `roles/logging.logWriter` on this agent's principal | `infra/agent/` | Write log entries |
+
+The default binding is in no repository, and anyone with project IAM rights, or an
+OpenTofu/Terraform run that owns the project policy, can remove it. Traces and logs are granted
+here as well so they survive that. **Model calls rely on the default binding alone**:
+`roles/aiplatform.user` is not granted, because it can also create and delete Vertex resources.
+If the agent starts failing with `PermissionDenied` on `aiplatform.endpoints.predict`, check
+the binding still exists:
+
+```bash
+gcloud projects get-iam-policy $GOOGLE_CLOUD_PROJECT --project=$GOOGLE_CLOUD_PROJECT \
+  --flatten='bindings[].members' --filter='bindings.role=roles/aiplatform.agentDefaultAccess' \
+  --format='value(bindings.members)'
+```
+
+#### Adding permissions for this agent
+
+A tool that needs more (a BigQuery dataset, a bucket, a secret) gets it from a file of this
+project's own in `infra/agent/`, for example `infra/agent/data_access.tf`. Do not edit
+`main.tf`, `ci.tf` or the `roles` default in `variables.tf`: the template owns those files, so
+every `cruft update` would conflict with the edit. A file the template never ships is left alone
+by every update, and OpenTofu reads every `.tf` file in the directory, so it applies with the
+rest on the next `make infra-apply`.
+
+Grant to the two principals the module already defines, and scope each grant to the resource
+rather than the project where the resource type allows it:
+
+| Local | Who it is | Use it for |
+|---|---|---|
+| `local.agent_principal` | The deployed agent at runtime (its Agent Identity) | Data and secrets the tools read when serving a request |
+| `local.ci_principal` | The GitHub repository, signed in through Workload Identity Federation | Anything `deploy.yml` itself has to reach; `null` when `github_repository` is empty |
+
+```hcl
+# infra/agent/data_access.tf -- project-owned; the template does not ship this file.
+
+locals {
+  dvc_buckets = ["my-dvc-remote-bucket"]
+}
+
+resource "google_storage_bucket_iam_member" "data" {
+  for_each = toset(local.dvc_buckets)
+  bucket   = each.value
+  role     = "roles/storage.objectViewer"
+  member   = local.agent_principal
+}
+
+resource "google_bigquery_dataset_iam_member" "data" {
+  project    = var.project_id
+  dataset_id = "my_dataset"
+  role       = "roles/bigquery.dataViewer"
+  member     = local.agent_principal
+}
+
+# Running queries is a project-level permission: there is no per-dataset jobUser.
+resource "google_project_iam_member" "bigquery_jobs" {
+  project = var.project_id
+  role    = "roles/bigquery.jobUser"
+  member  = local.agent_principal
+}
+
+resource "google_secret_manager_secret_iam_member" "git_token" {
+  project   = var.project_id
+  secret_id = "git_auth_token"
+  role      = "roles/secretmanager.secretAccessor"
+  member    = local.agent_principal
+}
+
+# Only if CI needs more than ci.tf grants; count keeps it off without a repository.
+resource "google_storage_bucket_iam_member" "ci_artifacts" {
+  count  = local.ci_enabled ? 1 : 0
+  bucket = "my-ci-artifact-bucket"
+  role   = "roles/storage.objectViewer"
+  member = local.ci_principal
+}
+```
+
+- **Use `_iam_member`, never `_iam_binding` or `_iam_policy`.** Those are authoritative: they
+  remove every other member of the role, or every other grant on the resource, including the
+  grants of sibling agents and of people.
+- **Resources in another project** take that project's id in `project`; the person running
+  `make infra-apply` then needs IAM rights there too.
+- **The grants follow the engine.** Re-creating it (a new `region`, a `tofu destroy`) changes
+  `local.agent_principal`; the next apply grants the new principal and removes the old one's
+  grants, so nothing is left behind on a principal that no longer exists.
+- **Test it in a file of its own**, for example `infra/agent/tests/data_access.tftest.hcl`:
+  `agent.tftest.hcl` is a template file too. Copy its `mock_provider` blocks, which every test
+  file needs, and assert each grant's member and role, so `make infra-test` catches a grant that
+  went to the wrong principal.
+
+The order is fixed, and `make deploy-*` runs it:
+
+1. `make infra-apply` creates the engine on first run (and with it the identity), and grants the
+   roles. Later applies change nothing unless the module changed.
+2. `deploy.py` ships the code to the engine named by the OpenTofu output. It never creates one: a
+   created engine would be a second agent, outside the state and without these grants.
+3. The health check runs last.
+
+OpenTofu owns the engine and its identity; `deploy.py` owns its code. The engine's
+`lifecycle.ignore_changes` lists the code fields (`package_spec`, `deployment_spec`,
+`agent_framework`, `class_methods`), so an apply never undoes a deploy. Anything that forces a
+new engine — a different `region`, or destroying it — creates a new principal: the next apply
+grants the new one and removes the old one's grants.
+
+An engine created before this module existed is adopted once, so it keeps its ID and identity:
+
+```bash
+make infra-import ENV=dev ENGINE=projects/<number>/locations/<region>/reasoningEngines/<id>
+```
+
+State lives in `gs://$GOOGLE_CLOUD_PROJECT-agents-state`, shared by every agent of the project
+under one prefix per agent and environment (`{{cookiecutter.project_slug}}/dev`, `{{cookiecutter.project_slug}}/prod`). Each prefix is
+its own state file with its own lock.
+
+No service account is involved, so the deployer needs no `iam.serviceAccountUser` (`actAs`).
+
+To check what a deployed resource runs as, read `spec.identityType` and `spec.effectiveIdentity`:
+
+```bash
+curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  "https://$GOOGLE_CLOUD_LOCATION-aiplatform.googleapis.com/v1/$(tofu -chdir=infra/agent output -raw agent_resource_name)" \
+  | jq '.spec | {identityType, effectiveIdentity}'
+```
+
+> **Upgrading an existing project — breaking.** A project generated before this change runs its
+> agent as `agent-engine-sa`, on an engine `deploy.py` created. After a `cruft update`:
+>
+> 1. `make setup-gcp ENV=<env>` creates the OpenTofu state bucket.
+> 2. Move every permission the agent got through `agent-engine-sa` beyond model, trace and log
+>    access (datasets, buckets, secrets) into a file of your own; see "Adding permissions for
+>    this agent" above. The new identity inherits nothing.
+> 3. `make deploy-<env>` creates a new engine with its own Agent Identity, grants its roles and
+>    ships the code. Then remove `AGENT_ENGINE_RESOURCE_NAME` from `.env`, point API consumers
+>    at the new engine and delete the old one by hand.
+>
+> Adopting the old engine with `make infra-import` instead, to keep its ID, is untested: whether
+> an existing engine can switch from a service account to Agent Identity in place is not
+> confirmed. `agent-engine-sa` itself is left in place: other deployments may still use it.
 
 ### Monitoring & alerting
 
@@ -219,7 +341,7 @@ these (unlike the app-level structured logging in `agent/observability.py`):
 | `reasoning_engine/memory/allocation_time` | Container memory allocation time |
 
 `deployment/monitoring/` builds a dashboard and two alert policies on top of these, applied via
-plain `gcloud` (consistent with `setup_gcp.sh` — this template uses no Terraform):
+plain `gcloud` (consistent with `setup_gcp.sh`; OpenTofu manages only the agent identity's grants):
 
 - `dashboard.json` — request count by response code, p50/p95/p99 latency, CPU/memory allocation
 - `alerting/error_rate.json` — 5xx response rate > 5% over 5 minutes (ratio condition via
@@ -249,11 +371,11 @@ Alert.
 
 | Workflow | Trigger | What it checks |
 |---|---|---|
-| `ci.yml` | push + PR | lint, format, typecheck, unit tests, combined-suite coverage |
+| `ci.yml` | push + PR | lint, format, typecheck, OpenTofu fmt/validate/tests, unit tests, combined-suite coverage |
 | `lint-pr.yml` | PR opened/edited | PR title is a valid conventional commit |
 | `security.yml` | push to main + weekly | CodeQL, pip-audit CVEs, secret scan |
 | `eval.yml` | PR to main | promptfoo red-team (90% pass threshold) |
-| `deploy.yml` | `ci.yml` passing on main | deploys that commit to Agent Engine prod, then runs a standalone health check |
+| `deploy.yml` | `ci.yml` passing on main | logs in through Workload Identity Federation, then `make deploy-code ENV=prod`: reads the engine from the OpenTofu state, ships that commit's code, health-checks. It never applies |
 | `cruft-check.yml` | push + PR + weekly | non-blocking: warns if `cruft update` is available from the template |
 
 ### Required GitHub Environments
@@ -261,23 +383,47 @@ Alert.
 `deploy.yml`'s job targets a GitHub Environment named `dev` or `prod` (Settings → Environments →
 New environment), matching its `environment` `workflow_dispatch` input — a push to `main` deploys
 to `prod` once `ci.yml` has passed on it, and never when it fails. Each environment should point
-at its own GCP project, so dev and prod need their own **Environment secrets/variables** — not repository-level ones, which would make both
-environments share the same credentials:
+at its own GCP project, so dev and prod need their own **Environment variables** — not repository-level ones,
+which would make both environments deploy to the same place. None of them is a secret: there is no key.
 
 | Name | Kind | Scope | Description |
 |---|---|---|---|
-| `GCP_SA_KEY` | Secret | Per environment (`dev`, `prod`) | Base64 service-account key, printed by `make setup-gcp ENV=<dev\|prod>` |
-| `GOOGLE_CLOUD_PROJECT` | Secret | Per environment | That environment's GCP project ID |
+| `GOOGLE_CLOUD_PROJECT` | Variable | Per environment | That environment's GCP project ID |
 | `GOOGLE_CLOUD_LOCATION` | Variable | Per environment | Vertex AI region |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Variable | Per environment | `projects/<number>/locations/global/workloadIdentityPools/github-actions/providers/github` |
 | `MODEL_PROVIDER` | Variable | Per environment | `google` \| `anthropic` \| `openai` \| `litellm` |
-| `AGENT_ENGINE_RESOURCE_NAME` | Variable | Per environment | Existing resource to update; set after that environment's first deploy |
 | `GCS_STAGING_BUCKET` | Variable | Per environment | Optional — derived from the project id unless you renamed the bucket |
-| `AGENT_ENGINE_SERVICE_ACCOUNT` | Variable | Per environment | Optional — derived from the project id unless you renamed the SA |
 | `GOOGLE_API_KEY` | Secret | Repository-level | Used only by `eval.yml` (promptfoo), not per-environment  <!-- pragma: allowlist secret --> |
 
+The engine name is not configured anywhere: `make deploy-code` reads it from the environment's
+OpenTofu state, as a local deploy does.
+
+**How CI gets into GCP.** `google-github-actions/auth` exchanges the run's GitHub OIDC token in
+the existing pool `github-actions` (provider `github`, which accepts only this organisation's
+repositories). There is no service account: the APIs see the repository itself,
+`principalSet://…/attribute.repository/<owner>/<repo>`. `infra/agent/ci.tf` grants it, and only
+it, what a code deploy needs:
+
+| Grant | Scope | Why |
+|---|---|---|
+| `roles/aiplatform.user` | this agent's engine only | update its code, query it in the health check |
+| `roles/storage.objectAdmin` | the shared staging bucket, whole bucket | upload the pickle and its files. Not narrowed to this agent's folder, by choice: CI can overwrite other agents' staging files |
+| `roles/storage.bucketViewer` | the shared staging bucket | the SDK reads the bucket's metadata (`storage.buckets.get`) before uploading |
+| `roles/storage.objectViewer` | the state bucket, objects under `<agent>/` (plus listing) | read the engine name |
+| `roles/serviceusage.serviceUsageConsumer` | the project | bill its API calls to the project; no data access |
+
+The repository comes from `GITHUB_REPOSITORY` (set by GitHub) or the `origin` remote, and the grants
+are made by a local `make infra-apply`. CI never applies, so it holds no IAM rights. The pool
+and provider are owned by another repository's OpenTofu and only referenced here.
+
+Any branch of the repository can obtain these credentials; the pool maps no branch or
+environment. Restrict deploys on the GitHub side: give `prod` a required reviewer and a
+deployment-branch rule.
+
 Bootstrap each environment's GCP project with `make setup-gcp ENV=dev` / `make setup-gcp
-ENV=prod` (see [setup_gcp.sh](deployment/scripts/setup_gcp.sh)) — it prints exactly which secret
-or variable to add and to which environment.
+ENV=prod` (see [setup_gcp.sh](deployment/scripts/setup_gcp.sh)) — it prints which variables to
+add to which environment. Then `make infra-apply ENV=<env>` from a clone whose `origin` is the
+GitHub repository grants CI its access.
 
 ### Claude Code slash commands
 
@@ -309,11 +455,16 @@ prompts/
     example_task.md    task-specific instructions (replace with your use case)
 deployment/
   config.py            resolve_model() + DeploymentConfig dataclass
-  deploy.py            CLI: deploy to Agent Engine (create or update)
+  deploy.py            CLI: ship the code to the engine infra/agent created (update only)
+  python_version.py    sends the local Python version with that update
   scripts/
     setup_gcp.sh       one-time GCP bootstrap
+    health_check.py    smoke test against the deployed agent, with retries
     read_logs.sh       read this agent's Cloud Logging entries
     read_traces.py     list this agent's Cloud Trace spans
+infra/
+  agent/               OpenTofu: the agent's engine, its Agent Identity and its project roles
+    tests/             `tofu test` cases, offline with a mocked provider
 tests/
   unit/                pure function tests — no GCP, no network
   evals/
@@ -378,17 +529,24 @@ stdout line into a structured `jsonPayload`. `make logs` reads exactly those, sc
 agent by `reasoning_engine_id` — the log names are shared by every reasoning engine in the
 project.
 
-**Traces do need configuration**, because nothing forwards spans. `deployment/deploy.py` sets two
-variables on the deployed resource:
+**Traces of the deployed agent come from Agent Engine's built-in telemetry.**
+`deployment/deploy.py` sets one variable on the deployed resource:
 
 | Variable | Effect |
 |---|---|
-| `CLOUD_TRACE_ENABLED` | Configure an OpenTelemetry tracer exporting to Cloud Trace; every `@instrument`ed call becomes a span named after the function. These are **child** spans — ADK wraps each request in an `invoke_workflow` root span — so `make traces` lists roots only; use `read_traces.py --spans` to expand them |
-| `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID` | The project to export to. **Not optional** — without it the exporter falls back to `google.auth.default()`, which resolves no project inside the Agent Engine container, and every export fails with `INVALID_ARGUMENT: Invalid project id in name!` |
+| `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` | `true`: the platform traces each request — model calls and tool calls under ADK's root span — into Cloud Trace. `make traces` lists roots only; use `read_traces.py --spans` to expand them. Without it the SDK sends `unspecified`, which an engine OpenTofu created resolves to disabled |
 
-Tracing is off by default so a local `make dev` writes only to stdout and needs no credentials;
-export `CLOUD_TRACE_ENABLED=true` to opt in locally. Telemetry never breaks a tool call: a missing
-library or unresolvable credentials is reported once on stderr and the tool runs on.
+Prompt and response text is **not** captured: `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`
+stays unset. Setting it would put user input and model output into the traces, unredacted.
+
+**Our own exporter stays off when deployed.** `agent/observability.py` can export a span per
+`@instrument`ed call itself (`CLOUD_TRACE_ENABLED`, with `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID`).
+Under Agent Identity that fails: the agent's access token is bound to its X.509 certificate and
+is accepted only over mutual TLS, which the Cloud Trace client does not use, so every export is
+rejected with `401 UNAUTHENTICATED`. Locally, with your own credentials, it still works: export
+`CLOUD_TRACE_ENABLED=true` and `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID=<project>` to opt in.
+Telemetry never breaks a tool call: a missing library or failing export is reported on stderr
+and the tool runs on.
 
 > **If application logs seem to be missing, check the project's log sink first.**
 > A disabled `_Default` sink discards every non-audit entry however it was written — including
@@ -507,19 +665,46 @@ Run `cz bump` (via `uv run cz bump`) to cut a release and move unreleased entrie
 - **Local runs need `GOOGLE_GENAI_USE_VERTEXAI=TRUE` or a `GOOGLE_API_KEY`.** With neither,
   google-genai uses the AI Studio backend and fails with `No API key was provided` even
   though ADC is valid.
-- **Deploying changes the runtime identity, and that needs `actAs`.** Whoever deploys needs
-  `roles/iam.serviceAccountUser` on `agent-engine-sa`. The failure is a `PermissionDenied`
-  that also arrives after the upload. `make setup-gcp` grants it; teammates deploying from
-  their own machines must be added by hand.
+- **The agent's model access is a Google-managed default.** It comes from
+  `roles/aiplatform.agentDefaultAccess` on the project's agent principalSet, which no
+  repository manages (see [Runtime identity](#runtime-identity)). If it is removed, every
+  request fails with `PermissionDenied` while logs and traces keep working.
+- **The container's Python travels with every deploy.** The SDK's `update()` never sends
+  `python_version`, OpenTofu cannot set it (the API rejects a `package_spec` without the
+  pickle), and an engine without one builds on 3.10, where the build fails with
+  `No matching distribution found for google-adk==2.x`. `deployment/python_version.py`
+  adds the local `major.minor` to the update request. It wraps a private SDK function, so
+  bumping `google-cloud-aiplatform` means `tests/unit/test_python_version.py` must still pass.
+- **`deploy.py` never creates an engine.** Without `AGENT_ENGINE_RESOURCE_NAME` it stops
+  before uploading anything. Run `make deploy-<env>`, which applies `infra/agent/` first and
+  passes the engine's name; grants can still take a minute or two to propagate, which is why
+  the health check retries.
+- **Replacing the engine replaces the agent's identity.** A new `region`, or destroying the
+  engine, gives the next apply a new engine and a new principal. Sessions on the old one are
+  gone; the grants move with the apply.
+- **An engine deleted outside OpenTofu leaves stale state.** The next apply creates a new one,
+  with a new identity. Delete engines through `tofu destroy`, not the console.
+- **Deploying an engine created outside OpenTofu makes a second one.** Adopt it with
+  `make infra-import` first, or the first `make deploy-*` creates another engine next to it.
+- **Applying the grants needs project IAM rights.** `make infra-apply` adds project-level
+  bindings, so the deployer needs `roles/resourcemanager.projectIamAdmin` or owner, on top
+  of what the deploy itself needs.
+- **CI's buckets must use uniform bucket-level access.** CI logs in as a federated
+  principal, and Cloud Storage rejects its writes to a bucket with fine-grained ACLs: the
+  upload fails with a bare `412` although every IAM grant is in place. Buckets made by the
+  old `setup_gcp.sh` (`gsutil mb` without `-b on`) have fine-grained ACLs; switch them with
+  `gcloud storage buckets update gs://<bucket> --uniform-bucket-level-access`, and give the
+  project's owners, editors and viewers `legacyObjectOwner`/`legacyObjectReader` on the
+  bucket to keep the object access the default ACL gave them.
 - **Missing logs are usually the project's log sink, not the agent.** A disabled `_Default`
   sink discards every non-audit entry however it was written, including a direct
   `gcloud logging write`. Check `gcloud logging sinks describe _Default` first.
-- **The service account and staging bucket are shared by every agent in the project.**
+- **The staging bucket and state bucket are shared by every agent in the project.**
   `setup_gcp.sh` saying "already exists, skipping" is the intended way a second agent joins.
-  Deleting either during any cleanup breaks every sibling agent.
-- **`make setup-gcp` mints a new service-account key every run and revokes none.** Audit
-  with `gcloud iam service-accounts keys list --iam-account=agent-engine-sa@<project>...`
-  and delete keys server-side, not just on disk.
+  Deleting either during a cleanup breaks sibling agents.
+- **Each agent needs its own state prefix.** The prefix is `<agent>/<env>` from
+  `AGENT_SLUG` in the Makefile. Two repos with the same prefix share one state file, and
+  each apply then removes the other's grants.
 - **The deployed container installs exactly what `uv.lock` pins.** `deploy.py` exports its
   `requirements` from the lock, because the agent is pickled against the local versions and a
   newer google-adk or cloudpickle in the container fails at request time. Deploy through
