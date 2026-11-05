@@ -106,6 +106,17 @@ jobs:
         run: uv run pre-commit run --all-files
         working-directory: /tmp/cc-test/test-agent
 
+      # infra/agent creates the engine and every IAM grant, and Jinja renders its .tf
+      # files like any other. Offline: no backend, mocked provider, no GCP needed.
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.13.2"
+          tofu_wrapper: false
+
+      - name: Run generated project's OpenTofu checks
+        run: make infra-test
+        working-directory: /tmp/cc-test/test-agent
+
   cruft-update:
     # Generated projects are told weekly by cruft-check.yml to run `cruft update`, and
     # nothing else exercises that path: it once crashed on every generated project, and
