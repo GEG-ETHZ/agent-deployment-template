@@ -141,49 +141,24 @@ def test_from_env_derives_gcs_dir_name_from_pyproject(required_deploy_env):
     assert DeploymentConfig.from_env().gcs_dir_name == expected
 
 
-def test_from_env_uses_project_name_as_display_name(required_deploy_env):
-    expected = "{{cookiecutter.project_name}}"
-
-    assert DeploymentConfig.from_env().agent_display_name == expected
-
-
-def test_from_env_reads_runtime_service_account(required_deploy_env, monkeypatch):
-    """The identity the deployed agent runs as, passed through to agent_engines."""
-    monkeypatch.setenv("AGENT_ENGINE_SERVICE_ACCOUNT", "sa@p.iam.gserviceaccount.com")
-
-    config = DeploymentConfig.from_env()
-
-    assert config.service_account == "sa@p.iam.gserviceaccount.com"
+def test_config_leaves_the_display_name_to_opentofu(required_deploy_env):
+    """infra/agent names the engine when it creates it; a deploy only updates code."""
+    assert not hasattr(DeploymentConfig.from_env(), "agent_display_name")
 
 
-def test_from_env_derives_service_account_from_the_project(
-    required_deploy_env, monkeypatch
-):
-    """The SA name is fixed by setup_gcp.sh, so the value is fully determined by the
-    project id -- restating it in .env would only let the two drift apart."""
-    monkeypatch.delenv("AGENT_ENGINE_SERVICE_ACCOUNT", raising=False)
-
-    assert (
-        DeploymentConfig.from_env().service_account
-        == "agent-engine-sa@test-project-123.iam.gserviceaccount.com"
-    )
+def test_from_env_runs_the_agent_under_agent_identity(required_deploy_env):
+    """Each deployed agent gets its own resource-scoped principal, not a shared SA."""
+    assert DeploymentConfig.from_env().identity_type == "AGENT_IDENTITY"
 
 
-def test_from_env_falls_back_to_the_derived_service_account_when_empty(
-    required_deploy_env, monkeypatch
-):
-    """An unset GitHub Actions variable arrives as "", which must not blank the SA."""
-    monkeypatch.setenv("AGENT_ENGINE_SERVICE_ACCOUNT", "")
-
-    assert (
-        DeploymentConfig.from_env().service_account
-        == "agent-engine-sa@test-project-123.iam.gserviceaccount.com"
-    )
+def test_config_carries_no_service_account(required_deploy_env):
+    """Agent Identity and service_account are mutually exclusive in the SDK."""
+    assert not hasattr(DeploymentConfig.from_env(), "service_account")
 
 
 def test_from_env_derives_staging_bucket_from_the_project(monkeypatch):
-    """Same reasoning as the service account: setup_gcp.sh provisions
-    <project>-agent-staging, so the deploy can work that out for itself."""
+    """setup_gcp.sh provisions <project>-agent-staging, so the deploy can work that out
+    for itself -- restating it in .env would only let the two drift apart."""
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project-123")
     monkeypatch.delenv("GCS_STAGING_BUCKET", raising=False)
 
@@ -209,14 +184,22 @@ def test_from_env_leaves_an_explicit_gs_uri_alone(monkeypatch):
     assert DeploymentConfig.from_env().staging_bucket == "gs://my-own-bucket"
 
 
-def test_runtime_env_vars_enable_tracing_with_an_explicit_project(required_deploy_env):
-    """Logs need nothing -- Agent Engine forwards stdout. Traces need the exporter
-    switched on *and* an explicit project: without the latter it falls back to
-    google.auth.default(), which resolves nothing in the container and fails every
-    export with "Invalid project id in name!"."""
+def test_runtime_env_vars_use_the_platforms_telemetry(required_deploy_env):
+    """Logs need nothing -- Agent Engine forwards stdout. Traces come from Agent
+    Engine's built-in telemetry: under Agent Identity the access token is bound to the
+    agent's certificate, and our own Cloud Trace exporter, which does not use mTLS, is
+    rejected with 401 UNAUTHENTICATED."""
     env_vars = DeploymentConfig.from_env().runtime_env_vars
 
-    assert env_vars == {
-        "CLOUD_TRACE_ENABLED": "true",
-        "OTEL_EXPORTER_GCP_TRACE_PROJECT_ID": "test-project-123",
-    }
+    assert env_vars == {"GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true"}
+
+
+def test_runtime_env_vars_keep_our_exporter_and_message_capture_off(
+    required_deploy_env,
+):
+    """Our exporter would only fail, and prompt/response text stays out of the
+    platform's traces unless someone decides otherwise."""
+    env_vars = DeploymentConfig.from_env().runtime_env_vars
+
+    assert "CLOUD_TRACE_ENABLED" not in env_vars
+    assert "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT" not in env_vars

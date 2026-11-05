@@ -1,13 +1,14 @@
 """Unit tests for the Agent Engine deploy path — no network, no GCP credentials required.
 
-`deploy()` imports `vertexai`, `vertexai.agent_engines`, `agent.agent.root_agent` and
-`run_smoke_test` inside the function body, so patching each at its source module keeps
-every test here offline: nothing is pickled, uploaded, or billed.
+`deploy()` imports `vertexai`, `vertexai.agent_engines` and `agent.agent.root_agent`
+inside the function body, so patching each at its source module keeps every test here
+offline: nothing is pickled, uploaded, or billed. `run_smoke_test` and `create` are
+patched too, only to prove deploy() calls neither.
 
 This is the highest-blast-radius code in the template — it ships the agent to production —
-so the tests below pin the behaviour that is easy to break silently: which of
-create/update is chosen, what gets handed to each, and that a failed smoke test actually
-fails the process instead of being logged and ignored.
+so the tests below pin the behaviour that is easy to break silently: that it only ever
+updates the engine OpenTofu created, what gets handed to that update, and that the agent
+stays on its own Agent Identity rather than a shared service account.
 """
 
 from types import SimpleNamespace
@@ -22,11 +23,15 @@ RESOURCE = "projects/p/locations/l/reasoningEngines/42"
 
 @pytest.fixture
 def deploy_env(monkeypatch, tmp_path):
-    """Deploy-time environment, with a CWD that absorbs `.agent_engine_resource`."""
+    """Deploy-time environment, with a CWD that absorbs `.agent_engine_resource`.
+
+    The engine already exists: OpenTofu (infra/agent) creates it, and `make deploy-*`
+    passes its name in AGENT_ENGINE_RESOURCE_NAME.
+    """
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project-123")
     monkeypatch.setenv("GCS_STAGING_BUCKET", "gs://test-staging-bucket")
     monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "europe-west1")
-    monkeypatch.delenv("AGENT_ENGINE_RESOURCE_NAME", raising=False)
+    monkeypatch.setenv("AGENT_ENGINE_RESOURCE_NAME", RESOURCE)
     # deploy() writes .agent_engine_resource relative to the CWD, not the project root.
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -34,14 +39,14 @@ def deploy_env(monkeypatch, tmp_path):
 
 @pytest.fixture
 def deps():
-    """Patched Vertex AI surface. `create` and `update` both yield the same remote agent."""
+    """Patched Vertex AI surface. `update` yields the deployed remote agent."""
     remote_agent = Mock()
     remote_agent.resource_name = RESOURCE
 
     with (
         patch("vertexai.init") as init,
         patch("vertexai.agent_engines.get") as get,
-        patch("vertexai.agent_engines.create", return_value=remote_agent) as create,
+        patch("vertexai.agent_engines.create") as create,
         patch(
             "deployment.scripts.health_check.run_smoke_test", return_value=True
         ) as smoke,
@@ -52,22 +57,38 @@ def deps():
         )
 
 
-def test_deploy_creates_new_resource_when_none_configured(deploy_env, deps):
+def update_kwargs(deps) -> dict:
+    """The keyword arguments the deploy passed to the existing engine's update()."""
+    return deps.get.return_value.update.call_args.kwargs
+
+
+def test_deploy_updates_the_engine_opentofu_created(deploy_env, deps):
     deploy("dev")
-
-    deps.create.assert_called_once()
-    deps.get.assert_not_called()
-
-
-def test_deploy_updates_existing_resource_when_configured(
-    deploy_env, deps, monkeypatch
-):
-    monkeypatch.setenv("AGENT_ENGINE_RESOURCE_NAME", RESOURCE)
-
-    deploy("prod")
 
     deps.get.assert_called_once_with(RESOURCE)
     deps.get.return_value.update.assert_called_once()
+
+
+def test_deploy_never_creates_an_engine(deploy_env, deps):
+    """A created engine would be a second agent with its own identity, outside the
+    OpenTofu state, and without the grants infra/agent makes."""
+    deploy("dev")
+
+    deps.create.assert_not_called()
+
+
+def test_deploy_refuses_to_run_without_a_resource_name(deploy_env, deps, monkeypatch):
+    """Fail before pickling or uploading anything, and say where the name comes from."""
+    monkeypatch.delenv("AGENT_ENGINE_RESOURCE_NAME")
+
+    with (
+        patch("deployment.deploy.locked_requirements") as requirements,
+        pytest.raises(ValueError, match="AGENT_ENGINE_RESOURCE_NAME"),
+    ):
+        deploy("dev")
+
+    requirements.assert_not_called()
+    deps.init.assert_not_called()
     deps.create.assert_not_called()
 
 
@@ -85,61 +106,33 @@ def test_deploy_ships_agent_and_prompts_as_extra_packages(deploy_env, deps):
     """The pickled agent references agent.tools.* by module path, so both must travel."""
     deploy("dev")
 
-    assert deps.create.call_args.kwargs["extra_packages"] == ["agent", "prompts"]
+    assert update_kwargs(deps)["extra_packages"] == ["agent", "prompts"]
 
 
-def test_deploy_sets_display_name_when_creating(deploy_env, deps):
+def test_deploy_does_not_send_display_name(deploy_env, deps):
+    """The display name belongs to the engine OpenTofu manages, not to a code deploy."""
     deploy("dev")
 
-    assert deps.create.call_args.kwargs["display_name"]
-
-
-def test_deploy_does_not_send_display_name_when_updating(deploy_env, deps, monkeypatch):
-    """Updating keeps the resource's existing display name — renaming is not a deploy concern."""
-    monkeypatch.setenv("AGENT_ENGINE_RESOURCE_NAME", RESOURCE)
-
-    deploy("prod")
-
-    assert "display_name" not in deps.get.return_value.update.call_args.kwargs
+    assert "display_name" not in update_kwargs(deps)
 
 
 def test_deploy_writes_resource_name_file(deploy_env, deps):
-    """deploy.yml reads this file to learn the resource name after either create or update."""
+    """deploy.yml reads this file to learn the resource name after the deploy."""
     deploy("dev")
 
     assert (deploy_env / ".agent_engine_resource").read_text() == RESOURCE + "\n"
 
 
-def test_deploy_runs_smoke_test_against_the_deployed_agent(deploy_env, deps):
+def test_deploy_leaves_the_smoke_test_to_the_health_check_step(deploy_env, deps):
+    """`make deploy-*` runs health_check.py, with retries, after the code is live."""
     deploy("dev")
 
-    deps.smoke.assert_called_once_with(deps.remote_agent)
-
-
-def test_deploy_exits_nonzero_when_smoke_test_fails(deploy_env, deps):
-    """A deployed-but-broken agent must fail the job, not pass quietly."""
-    deps.smoke.return_value = False
-
-    with pytest.raises(SystemExit) as excinfo:
-        deploy("dev")
-
-    assert excinfo.value.code == 1
-
-
-def test_deploy_writes_resource_file_before_smoke_test_fails(deploy_env, deps):
-    """The resource exists even when the smoke test fails — CI still needs its name."""
-    deps.smoke.return_value = False
-
-    with pytest.raises(SystemExit):
-        deploy("dev")
-
-    assert (deploy_env / ".agent_engine_resource").read_text() == RESOURCE + "\n"
+    deps.smoke.assert_not_called()
 
 
 def test_deploy_env_argument_is_informational_only(deploy_env, deps):
     """`--env dev` does not retarget anything: project/location/bucket come from the
-    environment. Deploying to dev vs prod is a matter of which .env or GitHub Environment
-    is in scope, not of this argument."""
+    environment, and the engine from AGENT_ENGINE_RESOURCE_NAME."""
     deploy("dev")
     dev_kwargs = deps.init.call_args.kwargs
 
@@ -149,64 +142,66 @@ def test_deploy_env_argument_is_informational_only(deploy_env, deps):
     assert deps.init.call_args.kwargs == dev_kwargs
 
 
-def test_deploy_passes_runtime_service_account_when_set(deploy_env, deps, monkeypatch):
-    """Without this, Vertex runs the agent as the shared Reasoning Engine Service
-    Agent and every IAM grant setup_gcp.sh makes goes unused at runtime."""
-    monkeypatch.setenv("AGENT_ENGINE_SERVICE_ACCOUNT", "sa@p.iam.gserviceaccount.com")
-
+def test_deploy_keeps_the_engine_on_agent_identity(deploy_env, deps):
+    """Matches the identity_type OpenTofu sets; a service account would move the
+    agent off its own principal and the grants made to it."""
     deploy("dev")
 
-    assert (
-        deps.create.call_args.kwargs["service_account"]
-        == "sa@p.iam.gserviceaccount.com"
+    assert update_kwargs(deps)["identity_type"] == "AGENT_IDENTITY"
+    assert "service_account" not in update_kwargs(deps)
+
+
+def test_deploy_sends_the_local_python_version_with_the_code(deploy_env, deps):
+    """update() builds its request through the SDK's builder; during the deploy that
+    request must carry the Python the agent is pickled with, or an engine OpenTofu
+    created builds on the API default, 3.10."""
+    from google.cloud.aiplatform_v1.types import ReasoningEngine, ReasoningEngineSpec
+    from google.cloud.aiplatform_v1.types.reasoning_engine_service import (
+        UpdateReasoningEngineRequest,
     )
+    from google.protobuf import field_mask_pb2
+    from vertexai.agent_engines import _agent_engines as sdk
 
+    from deployment.python_version import local_python_version
 
-def test_deploy_uses_the_derived_service_account_when_none_is_configured(
-    deploy_env, deps, monkeypatch
-):
-    """Never absent: omitting the kwarg is what silently put agents on the shared
-    Reasoning Engine Service Agent, so the derived SA is sent instead."""
-    monkeypatch.delenv("AGENT_ENGINE_SERVICE_ACCOUNT", raising=False)
-
-    deploy("dev")
-
-    assert (
-        deps.create.call_args.kwargs["service_account"]
-        == "agent-engine-sa@test-project-123.iam.gserviceaccount.com"
+    shipped = UpdateReasoningEngineRequest(
+        reasoning_engine=ReasoningEngine(
+            spec=ReasoningEngineSpec(
+                package_spec=ReasoningEngineSpec.PackageSpec(
+                    pickle_object_gcs_uri="gs://b/a/agent_engine.pkl"
+                )
+            )
+        ),
+        update_mask=field_mask_pb2.FieldMask(
+            paths=["spec.package_spec.pickle_object_gcs_uri"]
+        ),
     )
+    sent = []
 
+    def sdk_update(**_):
+        sent.append(
+            sdk._generate_update_request_or_raise(
+                resource_name=RESOURCE, staging_bucket="gs://b"
+            )
+        )
+        return deps.remote_agent
 
-def test_deploy_passes_service_account_on_update_too(deploy_env, deps, monkeypatch):
-    """An existing resource must be moved onto the runtime SA, not just new ones."""
-    monkeypatch.setenv("AGENT_ENGINE_RESOURCE_NAME", RESOURCE)
-    monkeypatch.setenv("AGENT_ENGINE_SERVICE_ACCOUNT", "sa@p.iam.gserviceaccount.com")
+    deps.get.return_value.update.side_effect = sdk_update
+    with patch.object(sdk, "_generate_update_request_or_raise", return_value=shipped):
+        deploy("dev")
 
-    deploy("prod")
-
-    update_kwargs = deps.get.return_value.update.call_args.kwargs
-    assert update_kwargs["service_account"] == "sa@p.iam.gserviceaccount.com"
+    package_spec = sent[0].reasoning_engine.spec.package_spec
+    assert package_spec.python_version == local_python_version()
+    assert "spec.package_spec.python_version" in sent[0].update_mask.paths
 
 
 def test_deploy_enables_observability_on_the_deployed_resource(deploy_env, deps):
-    """The trace exporter defaults to off, so the deploy is what switches it on, and
-    it needs the project passed explicitly to export anything at all."""
+    """Agent Engine's telemetry is what traces the deployed agent; the SDK alone would
+    send "unspecified", which an engine OpenTofu created resolves to disabled."""
     deploy("dev")
 
-    assert deps.create.call_args.kwargs["env_vars"] == {
-        "CLOUD_TRACE_ENABLED": "true",
-        "OTEL_EXPORTER_GCP_TRACE_PROJECT_ID": "test-project-123",
-    }
-
-
-def test_deploy_enables_observability_on_update_too(deploy_env, deps, monkeypatch):
-    monkeypatch.setenv("AGENT_ENGINE_RESOURCE_NAME", RESOURCE)
-
-    deploy("prod")
-
-    assert deps.get.return_value.update.call_args.kwargs["env_vars"] == {
-        "CLOUD_TRACE_ENABLED": "true",
-        "OTEL_EXPORTER_GCP_TRACE_PROJECT_ID": "test-project-123",
+    assert update_kwargs(deps)["env_vars"] == {
+        "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true"
     }
 
 
@@ -229,26 +224,18 @@ def test_deploy_pins_requirements_to_the_lockfile(deploy_env, deps, package):
     there breaks unpickling at container start."""
     deploy("dev")
 
-    requirements = deps.create.call_args.kwargs["requirements"]
-    assert f"{package}=={_locked_version(package)}" in requirements
+    assert (
+        f"{package}=={_locked_version(package)}" in update_kwargs(deps)["requirements"]
+    )
 
 
 def test_deploy_requirements_carry_no_comments_or_dev_tools(deploy_env, deps):
     """The SDK parses each line as a requirement; dev tools do not belong in production."""
     deploy("dev")
 
-    requirements = deps.create.call_args.kwargs["requirements"]
+    requirements = update_kwargs(deps)["requirements"]
     assert all(line and not line.startswith(("#", "-")) for line in requirements)
     assert not any(line.startswith(("pytest==", "ruff==")) for line in requirements)
-
-
-def test_deploy_sends_the_same_requirements_on_update(deploy_env, deps, monkeypatch):
-    monkeypatch.setenv("AGENT_ENGINE_RESOURCE_NAME", RESOURCE)
-
-    deploy("prod")
-
-    requirements = deps.get.return_value.update.call_args.kwargs["requirements"]
-    assert f"google-adk=={_locked_version('google-adk')}" in requirements
 
 
 def test_deploy_fails_before_uploading_when_the_lockfile_cannot_be_exported(
@@ -264,4 +251,4 @@ def test_deploy_fails_before_uploading_when_the_lockfile_cannot_be_exported(
     ):
         deploy("dev")
 
-    deps.create.assert_not_called()
+    deps.get.return_value.update.assert_not_called()

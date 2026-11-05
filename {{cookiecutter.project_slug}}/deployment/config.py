@@ -46,16 +46,15 @@ def resolve_model():
             )
 
 
-# The service account `setup_gcp.sh` creates, and the staging bucket it provisions.
-# Both are fully determined by the project id, so neither has to be restated in .env
-# -- keep these in step with SA_NAME and BUCKET in deployment/scripts/setup_gcp.sh.
-RUNTIME_SA_NAME = "agent-engine-sa"
+# The staging bucket `setup_gcp.sh` provisions is fully determined by the project id,
+# so it does not have to be restated in .env -- keep this in step with BUCKET in
+# deployment/scripts/setup_gcp.sh.
 STAGING_BUCKET_SUFFIX = "-agent-staging"
 
-
-def default_service_account(project: str) -> str:
-    """The runtime identity `setup_gcp.sh` provisions for this project."""
-    return f"{RUNTIME_SA_NAME}@{project}.iam.gserviceaccount.com"
+# The deployed agent runs under its own resource-scoped Agent Identity. Beyond the
+# project's Google-managed agent default access, infra/agent grants it its
+# roles. See "Runtime identity" in AGENTS.md.
+RUNTIME_IDENTITY_TYPE = "AGENT_IDENTITY"
 
 
 def default_staging_bucket(project: str) -> str:
@@ -79,22 +78,22 @@ class DeploymentConfig:
     location: str
     staging_bucket: str
     resource_name: str | None
-    agent_display_name: str
     gcs_dir_name: str
-    service_account: str
+    identity_type: str = RUNTIME_IDENTITY_TYPE
 
     @classmethod
     def from_env(cls) -> "DeploymentConfig":
         """Build the config from the environment.
 
-        `GOOGLE_CLOUD_PROJECT` is the only required variable. The staging bucket and
-        the runtime service account are derived from it, matching what
-        `setup_gcp.sh` provisions, and the corresponding environment variables exist
-        only to override that for a renamed bucket or SA.
+        `GOOGLE_CLOUD_PROJECT` is the only required variable. The staging bucket is
+        derived from it, matching what `setup_gcp.sh` provisions, and
+        `GCS_STAGING_BUCKET` exists only to override that for a renamed bucket.
+
+        Raises:
+            KeyError: `GOOGLE_CLOUD_PROJECT` is not set.
         """
         project = os.environ["GOOGLE_CLOUD_PROJECT"]
         staging_bucket = os.getenv("GCS_STAGING_BUCKET")
-        service_account = os.getenv("AGENT_ENGINE_SERVICE_ACCOUNT")
         return cls(
             project=project,
             location=os.getenv("GOOGLE_CLOUD_LOCATION", "europe-west1"),
@@ -103,24 +102,23 @@ class DeploymentConfig:
                 if staging_bucket
                 else default_staging_bucket(project)
             ),
+            # Set by `make deploy-*` from the OpenTofu output; see infra/agent.
             resource_name=os.getenv("AGENT_ENGINE_RESOURCE_NAME") or None,
-            agent_display_name="{{cookiecutter.project_name}}",
             # Staging subfolder, project-named so several agents can share one
             # bucket instead of colliding in the SDK's generic default.
             gcs_dir_name=_project_name(),
-            # Always set: omitting it silently falls back to the project's shared
-            # Reasoning Engine Service Agent. See "Runtime identity" in AGENTS.md.
-            service_account=service_account or default_service_account(project),
         )
 
     @property
     def runtime_env_vars(self) -> dict[str, str]:
         """Environment variables set on the deployed container.
 
-        Deliberately minimal. Logs need nothing here; traces need both of these,
-        and neither is optional. See "Observability -> Destinations" in AGENTS.md.
+        Deliberately minimal. Logs need nothing here: Agent Engine forwards stdout.
+        Traces come from Agent Engine's built-in telemetry. Our own Cloud Trace
+        exporter (CLOUD_TRACE_ENABLED) stays off when deployed: under Agent Identity
+        the access token is bound to the agent's certificate, and the exporter, which
+        does not use mTLS, is rejected with 401. Prompt and response text is not
+        captured (OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT stays unset).
+        See "Observability -> Destinations" in AGENTS.md.
         """
-        return {
-            "CLOUD_TRACE_ENABLED": "true",
-            "OTEL_EXPORTER_GCP_TRACE_PROJECT_ID": self.project,
-        }
+        return {"GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true"}

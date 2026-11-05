@@ -62,20 +62,35 @@ def locked_requirements() -> list[str]:
 
 
 def deploy(env: str) -> None:
+    """Ship the agent's code to the engine OpenTofu created.
+
+    Raises:
+        ValueError: AGENT_ENGINE_RESOURCE_NAME is not set.
+    """
     import vertexai
     from vertexai import agent_engines
 
     from agent.agent import root_agent
     from deployment.config import DeploymentConfig
+    from deployment.python_version import local_python_version, sending_python_version
 
     config = DeploymentConfig.from_env()
+    # Never create one here: a created engine would be a second agent with its own
+    # identity, outside the OpenTofu state and without the grants infra/agent makes.
+    if not config.resource_name:
+        raise ValueError(
+            "AGENT_ENGINE_RESOURCE_NAME is not set. The engine is created by OpenTofu: run "
+            f"`make deploy-{env}`, which applies infra/agent first and passes its name."
+        )
     requirements = locked_requirements()
 
     logger.info("Deploying [%s] to Vertex AI Agent Engine", env)
     logger.info("  Project:  %s", config.project)
     logger.info("  Location: %s", config.location)
     logger.info("  Bucket:   %s", config.staging_bucket)
-    logger.info("  Runtime SA: %s", config.service_account)
+    logger.info("  Identity: %s", config.identity_type)
+    logger.info("  Engine:   %s", config.resource_name)
+    logger.info("  Python:   %s", local_python_version())
 
     vertexai.init(
         project=config.project,
@@ -91,41 +106,27 @@ def deploy(env: str) -> None:
     # Dict[str, str | SecretRef]. Cast rather than widen, to keep config.py SDK-free.
     env_vars = cast("dict[str, str | SecretRef]", config.runtime_env_vars)
 
-    # service_account is sent on create and update alike; omitting it falls back to
-    # the shared service agent. See "Runtime identity" in AGENTS.md.
-    if config.resource_name:
-        logger.info("  Updating: %s", config.resource_name)
-        existing = agent_engines.get(config.resource_name)
+    # identity_type repeats what infra/agent sets, so a deploy can never move the agent
+    # onto the shared Reasoning Engine Service Agent. See "Runtime identity" in AGENTS.md.
+    # The container must run the Python the agent is pickled with, and update() alone
+    # never says which: see deployment/python_version.py.
+    existing = agent_engines.get(config.resource_name)
+    with sending_python_version(local_python_version()):
         remote_agent = existing.update(
             agent_engine=root_agent,
             requirements=requirements,
             extra_packages=extra_packages,
             gcs_dir_name=config.gcs_dir_name,
             env_vars=env_vars,
-            service_account=config.service_account,
-        )
-    else:
-        logger.info("  Creating new Agent Engine resource...")
-        remote_agent = agent_engines.create(
-            agent_engine=root_agent,
-            requirements=requirements,
-            display_name=config.agent_display_name,
-            gcs_dir_name=config.gcs_dir_name,
-            extra_packages=extra_packages,
-            env_vars=env_vars,
-            service_account=config.service_account,
+            identity_type=config.identity_type,
         )
 
     resource_name = remote_agent.resource_name
     logger.info("Deployed: %s", resource_name)
 
+    # Read by deploy.yml's health-check and summary steps. No smoke test here: `make
+    # deploy-*` runs the health check, with retries, once the code is live.
     Path(".agent_engine_resource").write_text(resource_name + "\n")
-
-    from deployment.scripts.health_check import run_smoke_test
-
-    logger.info("Running smoke test...")
-    if not run_smoke_test(remote_agent):
-        sys.exit(1)
 
     # Emit for CI capture
     logger.info("AGENT_ENGINE_RESOURCE_NAME=%s", resource_name)
