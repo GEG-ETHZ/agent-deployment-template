@@ -42,7 +42,7 @@ For GCP deployment (one-time):
 gcloud auth login
 gcloud auth application-default login
 
-make setup-gcp ENV=dev   # enables APIs, creates the staging and OpenTofu state buckets
+make setup-gcp ENV=dev   # enables APIs, checks that the shared staging and state buckets exist
 make deploy-dev          # OpenTofu: engine, identity, roles; then ship the code; health-check
 ```
 
@@ -315,7 +315,8 @@ curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
 > **Upgrading an existing project — breaking.** A project generated before this change runs its
 > agent as `agent-engine-sa`, on an engine `deploy.py` created. After a `cruft update`:
 >
-> 1. `make setup-gcp ENV=<env>` creates the OpenTofu state bucket.
+> 1. The OpenTofu state bucket must exist. `geg-core-infra` manages it, and `make setup-gcp
+>    ENV=<env>` checks for it.
 > 2. Move every permission the agent got through `agent-engine-sa` beyond model, trace and log
 >    access (datasets, buckets, secrets) into a file of your own; see "Adding permissions for
 >    this agent" above. The new identity inherits nothing.
@@ -699,13 +700,12 @@ Run `cz bump` (via `uv run cz bump`) to cut a release and move unreleased entrie
 - **Applying the grants needs project IAM rights.** `make infra-apply` adds project-level
   bindings, so the deployer needs `roles/resourcemanager.projectIamAdmin` or owner, on top
   of what the deploy itself needs.
-- **CI's buckets must use uniform bucket-level access.** CI logs in as a federated
-  principal, and Cloud Storage rejects its writes to a bucket with fine-grained ACLs: the
-  upload fails with a bare `412` although every IAM grant is in place. Buckets made by the
-  old `setup_gcp.sh` (`gsutil mb` without `-b on`) have fine-grained ACLs; switch them with
-  `gcloud storage buckets update gs://<bucket> --uniform-bucket-level-access`, and give the
-  project's owners, editors and viewers `legacyObjectOwner`/`legacyObjectReader` on the
-  bucket to keep the object access the default ACL gave them.
+- **The shared buckets come from `geg-core-infra`, not from this repository.** `setup_gcp.sh`
+  only checks that they exist and stops if one is missing. They are private with uniform
+  bucket-level access, which CI needs: it logs in as a federated principal, and Cloud Storage
+  rejects its writes to a bucket with fine-grained ACLs (a bare `412` on upload although every
+  IAM grant is in place). Fix a bucket there, in module `agent-buckets`, never by hand here; one
+  created by hand is adopted with an `import` block.
 - **Missing logs are usually the project's log sink, not the agent.** A disabled `_Default`
   sink discards every non-audit entry however it was written, including a direct
   `gcloud logging write`. Check `gcloud logging sinks describe _Default` first.
@@ -713,9 +713,9 @@ Run `cz bump` (via `uv run cz bump`) to cut a release and move unreleased entrie
   `pyproject.toml` (`gcs_dir_name`) and the grant's condition uses `AGENT_SLUG` from the
   Makefile. If they differ, every CI deploy fails with a `403` on upload;
   `tests/unit/test_agent_slug.py` checks they match. Renaming the project means renaming both.
-- **The staging bucket and state bucket are shared by every agent in the project.**
-  `setup_gcp.sh` saying "already exists, skipping" is the intended way a second agent joins.
-  Deleting either during a cleanup breaks sibling agents.
+- **The staging bucket and state bucket are shared by every agent in the project.** A second
+  agent simply finds them already there. Deleting either during a cleanup breaks sibling
+  agents.
 - **`make infra-apply` fails on the pool lookup in a project without `github-oidc`.** CI's grants
   look the pool up in the project, and it is created in `geg-core-infra`, not here. A new project
   without it fails the first `make deploy-*`, even if you never want CI. Create the pool, or

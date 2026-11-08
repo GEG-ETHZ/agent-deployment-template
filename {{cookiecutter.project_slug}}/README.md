@@ -119,7 +119,7 @@ Application Default Credentials. `gcloud auth login` does **not** refresh ADC, a
 gcloud auth login
 gcloud auth application-default login
 
-make setup-gcp ENV=dev    # one-time GCP bootstrap for the dev project (APIs, buckets)
+make setup-gcp ENV=dev    # one-time GCP bootstrap for the dev project (APIs; checks the shared buckets)
 make setup-gcp ENV=prod   # same, for the prod project (ENV defaults to prod if omitted)
 make deploy-dev           # OpenTofu: engine, identity, roles; ship the code; health-check
 make deploy-prod          # same, for prod

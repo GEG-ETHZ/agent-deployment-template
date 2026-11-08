@@ -38,6 +38,10 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   `…/attribute.repository_environment/<org>/<repo>:<env>`, which GitHub only issues after the
   environment's protection rules have passed. The pool must map that attribute.
 
+- **The shared staging and state buckets are managed in `geg-core-infra`.** `setup_gcp.sh`
+  checks that they exist and stops, naming each missing one, instead of creating them with
+  its own settings.
+
 - **The deployed agent is traced by Agent Engine's built-in telemetry**
   (`GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY=true`). Agent Identity tokens are
   certificate-bound, and the agent's own Cloud Trace exporter is rejected with 401. Prompt and
@@ -48,7 +52,8 @@ MAJOR/MINOR/PATCH and how releases are tagged.
 - `make infra-apply`, `make infra-import`, `make infra-test` and `make deploy-code` in
   generated projects; `ci.yml` runs `make infra-test`, offline against a mocked provider.
 - The health check retries while new IAM grants propagate (`--attempts`).
-- `setup_gcp.sh` creates the shared OpenTofu state bucket `<project>-agents-state`.
+- `setup_gcp.sh` checks that the shared staging and state buckets exist, stopping and naming
+  each missing one; it creates none.
 - CI's staging access is limited to the agent's own folder `<project_slug>/`, and its names
   are validated before they enter the IAM condition.
 - `GITHUB_REPOSITORY` is committed in the `Makefile`, rendered from `github_org` and
@@ -61,10 +66,11 @@ MAJOR/MINOR/PATCH and how releases are tagged.
 
 The engine is re-created, so the agent gets a new resource ID and a new identity. Prerequisites
 in the GCP project: a Workload Identity pool `github-oidc` with a provider `github` that maps
-`attribute.repository_environment`, and uniform bucket-level access on the staging bucket (a federated
-principal's upload fails with 412 otherwise).
+`attribute.repository_environment`, and the shared staging and state buckets, private with
+uniform bucket-level access (a federated principal's upload fails with 412 otherwise), as
+`geg-core-infra` provides them.
 
-1. `cruft update`, then `make setup-gcp ENV=dev` to create the state bucket.
+1. `cruft update`, then `make setup-gcp ENV=dev` to check that the shared buckets exist.
 2. Move every grant the agent relied on through `agent-engine-sa` beyond model, trace and log
    access into a project-owned file such as `infra/agent/data_access.tf` (see "Adding
    permissions for this agent" in the generated `AGENTS.md`). The new identity inherits nothing.

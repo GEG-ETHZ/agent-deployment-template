@@ -26,8 +26,9 @@ re-run the relevant section whenever `{{cookiecutter.project_slug}}/` changes.
   API then defaults to 3.10 and the container build fails on google-adk 2.x
   (`No matching distribution found`). `deployment/python_version.py` adds it; a build log
   showing Python 3.10 means that wrapper is not in effect.
-- **Workload Identity Federation needs uniform bucket-level access.** A federated principal
-  cannot write to a bucket with fine-grained ACLs: the upload fails with 412. Check with
+- **Workload Identity Federation needs uniform bucket-level access.** The shared buckets are
+  managed in `geg-core-infra`, which gives them that. A federated principal cannot write to a
+  bucket with fine-grained ACLs: the upload fails with 412. Check with
   `gcloud storage buckets describe gs://<bucket> --format='value(uniform_bucket_level_access)'`.
 - **One update at a time per engine.** A second deploy while the first is still building
   fails with `FAILED_PRECONDITION … Current state: UPDATING`. Wait for the operation, do not
@@ -357,8 +358,8 @@ resources are **shared across every agent in the project**; the rest are per-age
 
 | Resource | Scope | Name |
 | --- | --- | --- |
-| Staging bucket | **shared** | `gs://<project>-agent-staging` (uniform bucket-level access) |
-| OpenTofu state bucket | **shared** | `gs://<project>-agents-state` |
+| Staging bucket | **shared** | `gs://<project>-agent-staging` (managed in `geg-core-infra`; uniform bucket-level access) |
+| OpenTofu state bucket | **shared** | `gs://<project>-agents-state` (managed in `geg-core-infra`) |
 | Workload Identity pool | **shared** | `github-oidc`, provider `github` (managed in `geg-core-infra`) |
 | Staging subfolder | per-agent | `gs://<project>-agent-staging/<project_slug>/` |
 | OpenTofu state | per-agent | `gs://<project>-agents-state/<project_slug>/<env>/` |
@@ -370,8 +371,8 @@ resources are **shared across every agent in the project**; the rest are per-age
 
 `config.py` states the intent directly — `gcs_dir_name=_project_name()`, commented "so
 artifacts land at `<bucket>/<project_slug>/` instead of the generic default". And
-`setup_gcp.sh`'s "already exists, skipping" is not a fallback: it is how the second and every
-later agent deliberately adopts the shared buckets.
+`setup_gcp.sh` creates no bucket: it checks that the shared ones exist, which is how the second
+and every later agent joins, and stops naming each missing bucket.
 
 **So a shared team project is a valid target.** A new agent joins alongside earlier ones
 rather than colliding. What is *not* safe is deleting the shared pieces during teardown — see
@@ -446,13 +447,13 @@ gcloud billing projects describe "$ADK_TEST_PROJECT" --format='value(billingEnab
 make setup-gcp ENV=dev
 ```
 
-- [ ] Expect **"already exists, skipping"** for the staging and state buckets when targeting
-      a project that already hosts an agent. That is correct, not a warning.
-- [ ] Confirm no service account is created and no key is written.
-- [ ] Confirm `setup-gcp` is idempotent — run it twice against a project that already has
-      these resources and confirm no duplicates or errors. Separately, verify the *fresh-create*
-      path against a genuinely empty project — this is easy to skip if every project you test
-      against already hosts an agent.
+- [ ] Expect both shared buckets reported as existing when targeting a project where
+      `geg-core-infra` has applied them.
+- [ ] Confirm no bucket, service account or key is created, and that a second run changes
+      nothing.
+- [ ] Against a project **without** the buckets, confirm it names each missing one, points at
+      `geg-core-infra`, exits non-zero and creates nothing.
+- [ ] Without the `github-oidc` pool it prints a warning and carries on.
 
 ### Deploy
 
