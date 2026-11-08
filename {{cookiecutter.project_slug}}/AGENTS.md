@@ -440,9 +440,13 @@ pool is looked up.
 
 | Command | What it does |
 |---|---|
-| `/deploy` | Runs `make deploy-prod` and reports the resource name |
+| `/deploy` | Asks you to run `make infra-apply ENV=prod`, then runs `make deploy-code ENV=prod` and reports the resource name |
 | `/eval` | Runs `make eval` and summarises results |
 | `/logs` | Runs `make logs` and streams Cloud Logging output |
+
+An assistant never applies OpenTofu. An apply changes the project's IAM grants and its confirmation
+prompt is the only review, so `/deploy` leaves `make infra-apply` to you and never passes
+`-auto-approve`.
 
 ## Part B — changing the code
 

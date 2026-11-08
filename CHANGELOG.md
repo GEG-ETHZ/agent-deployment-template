@@ -60,6 +60,8 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   `project_slug`, instead of read from the applier's `origin` remote; empty switches CI's
   access off and needs no pool. Edit it if the repository has another name.
 - `setup_gcp.sh` warns when the `github-oidc` pool is missing from the project.
+- `/deploy` asks the person to run `make infra-apply` and never passes `-auto-approve`; it
+  ships the code with `make deploy-code`.
 - `validate-template.yml` and `make validate` run the generated project's OpenTofu checks.
 
 ### Upgrading an existing project
