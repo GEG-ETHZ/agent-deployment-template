@@ -91,6 +91,18 @@ echo "That applies infra/agent (creates the engine and its Agent Identity, grant
 echo "roles; asks to confirm the plan), ships the code to that engine, and health-checks it."
 echo "The engine's name lives in the OpenTofu state, not in .env."
 echo ""
+# CI's grants (infra/agent/ci.tf) look this pool up in the project, so `make infra-apply`
+# fails on it while CI is switched on and the pool is missing. The pool is managed in
+# geg-core-infra (module github-oidc-pool), not here, so only warn.
+WIF_POOL="${WIF_POOL_ID:-github-oidc}"
+if ! gcloud iam workload-identity-pools describe "$WIF_POOL" \
+  --location=global --project="$PROJECT" &>/dev/null; then
+  echo "WARNING: Workload Identity pool '$WIF_POOL' does not exist in $PROJECT."
+  echo "  It is managed in the geg-core-infra repository (module github-oidc-pool)."
+  echo "  Until it exists, 'make infra-apply' fails on the pool lookup. To deploy without CI,"
+  echo "  run: make deploy-$GH_ENVIRONMENT GITHUB_REPOSITORY="
+  echo ""
+fi
 echo "CI deploys (deploy.yml) log in through Workload Identity Federation, with no key."
 echo "Add these as '$GH_ENVIRONMENT' environment variables in GitHub:"
 echo "  GOOGLE_CLOUD_PROJECT           = $PROJECT"

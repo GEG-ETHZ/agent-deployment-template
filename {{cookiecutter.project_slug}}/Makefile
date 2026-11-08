@@ -13,8 +13,11 @@ STATE_BUCKET ?= $(GOOGLE_CLOUD_PROJECT)-agents-state
 GOOGLE_CLOUD_LOCATION ?= europe-west1
 STAGING_BUCKET = $(patsubst gs://%,%,$(or $(GCS_STAGING_BUCKET),$(GOOGLE_CLOUD_PROJECT)-agent-staging))
 # The repository whose deploy.yml may ship this agent's code (grants in infra/agent/ci.tf).
-# GitHub Actions sets it; locally it comes from the `origin` remote, empty without one.
-GITHUB_REPOSITORY ?= $(shell git remote get-url origin 2>/dev/null | sed -E 's|^(git@github\.com:\|https://github\.com/)||; s|\.git$$||')
+# Committed, not read from `origin`: with no remote an apply would remove the grants, and
+# with a fork as `origin` it would move them to the fork. `:=` also beats the environment,
+# where GitHub Actions sets GITHUB_REPOSITORY itself. Empty gives CI no access and needs no
+# Workload Identity pool: `make deploy-dev GITHUB_REPOSITORY=`.
+GITHUB_REPOSITORY := {{cookiecutter.github_org}}/{{cookiecutter.project_slug}}
 TOFU_VARS = -var="project_id=$(GOOGLE_CLOUD_PROJECT)" \
 	-var="region=$(GOOGLE_CLOUD_LOCATION)" \
 	-var="agent_slug=$(AGENT_SLUG)" \

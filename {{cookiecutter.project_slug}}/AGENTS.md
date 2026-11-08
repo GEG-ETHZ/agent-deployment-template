@@ -412,7 +412,8 @@ grants it, and only it, what a code deploy needs:
 | `roles/storage.objectViewer` | the state bucket, objects under `<agent>/` (plus listing) | read the engine name |
 | `roles/serviceusage.serviceUsageConsumer` | the project | bill its API calls to the project; no data access |
 
-The repository comes from `GITHUB_REPOSITORY` (set by GitHub) or the `origin` remote, and the grants
+The repository is the committed `GITHUB_REPOSITORY` in the `Makefile`, not the applier's `origin`
+(a clone without a remote, or a fork, would otherwise remove or move the grants), and the grants
 are made by a local `make infra-apply`. CI never applies, so it holds no IAM rights. The pool
 and provider are owned by the `geg-core-infra` repository (module `github-oidc-pool`) and only
 referenced here.
@@ -427,8 +428,12 @@ stay open.
 
 Bootstrap each environment's GCP project with `make setup-gcp ENV=dev` / `make setup-gcp
 ENV=prod` (see [setup_gcp.sh](deployment/scripts/setup_gcp.sh)) — it prints which variables to
-add to which environment. Then `make infra-apply ENV=<env>` from a clone whose `origin` is the
-GitHub repository grants CI its access.
+add to which environment. Then `make infra-apply ENV=<env>` grants CI its access.
+
+CI's access needs the `github-oidc` pool in the environment's project, which `geg-core-infra`
+creates; `setup_gcp.sh` warns when it is missing. To deploy without CI, set `GITHUB_REPOSITORY` in
+the `Makefile` to empty or run `make deploy-<env> GITHUB_REPOSITORY=`: no grants are made and no
+pool is looked up.
 
 ### Claude Code slash commands
 
@@ -711,6 +716,10 @@ Run `cz bump` (via `uv run cz bump`) to cut a release and move unreleased entrie
 - **The staging bucket and state bucket are shared by every agent in the project.**
   `setup_gcp.sh` saying "already exists, skipping" is the intended way a second agent joins.
   Deleting either during a cleanup breaks sibling agents.
+- **`make infra-apply` fails on the pool lookup in a project without `github-oidc`.** CI's grants
+  look the pool up in the project, and it is created in `geg-core-infra`, not here. A new project
+  without it fails the first `make deploy-*`, even if you never want CI. Create the pool, or
+  deploy with `GITHUB_REPOSITORY=` empty. Applying with it empty removes CI's grants.
 - **Each agent needs its own state prefix.** The prefix is `<agent>/<env>` from
   `AGENT_SLUG` in the Makefile. Two repos with the same prefix share one state file, and
   each apply then removes the other's grants.

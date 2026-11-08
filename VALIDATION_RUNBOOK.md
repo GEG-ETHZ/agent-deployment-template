@@ -400,9 +400,10 @@ stored as a secret. What has to exist first:
 
 - the pool `github-oidc` and its `github` provider, mapping `attribute.repository_environment`
   (shared, once per project, managed in `geg-core-infra`; `setup_gcp.sh` prints the provider
-  name)
-- `make infra-apply` run for the environment, with `GITHUB_REPOSITORY=<org>/<repo>` (derived
-  from the `origin` remote), so `ci.tf` creates the repository's grants for it
+  name and warns when the pool is missing)
+- `make infra-apply` run for the environment, so `ci.tf` creates the repository's grants for
+  it. The repository is the committed `GITHUB_REPOSITORY` in the `Makefile`, not the `origin`
+  remote; empty gives CI no access and needs no pool
 - the repository variables `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GOOGLE_CLOUD_PROJECT`
 
 A job holds those grants only if it names the environment (`environment: dev|prod`), and

@@ -51,6 +51,10 @@ MAJOR/MINOR/PATCH and how releases are tagged.
 - `setup_gcp.sh` creates the shared OpenTofu state bucket `<project>-agents-state`.
 - CI's staging access is limited to the agent's own folder `<project_slug>/`, and its names
   are validated before they enter the IAM condition.
+- `GITHUB_REPOSITORY` is committed in the `Makefile`, rendered from `github_org` and
+  `project_slug`, instead of read from the applier's `origin` remote; empty switches CI's
+  access off and needs no pool. Edit it if the repository has another name.
+- `setup_gcp.sh` warns when the `github-oidc` pool is missing from the project.
 - `validate-template.yml` and `make validate` run the generated project's OpenTofu checks.
 
 ### Upgrading an existing project
