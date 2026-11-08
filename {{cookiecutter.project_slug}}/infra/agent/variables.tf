@@ -11,16 +11,31 @@ variable "region" {
 variable "agent_slug" {
   description = "The agent's name: the engine's display name, and its folder in the state and staging buckets. The Makefile passes AGENT_SLUG."
   type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9_-]*$", var.agent_slug))
+    error_message = "agent_slug may hold only lowercase letters, digits, hyphens and underscores: it is written into IAM conditions and bucket paths."
+  }
 }
 
 variable "staging_bucket" {
   description = "Bucket deploy.py uploads the agent's code to, without gs://."
   type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9._-]*[a-z0-9]$", var.staging_bucket))
+    error_message = "staging_bucket must be a bare bucket name, without gs://."
+  }
 }
 
 variable "state_bucket" {
   description = "Bucket holding the OpenTofu state of every agent of the project."
   type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9._-]*[a-z0-9]$", var.state_bucket))
+    error_message = "state_bucket must be a bare bucket name, without gs://."
+  }
 }
 
 variable "github_repository" {

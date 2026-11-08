@@ -36,16 +36,30 @@ resource "google_vertex_ai_reasoning_engine_iam_member" "ci" {
   member           = local.ci_principal
 }
 
-# Upload the pickle, requirements and dependencies. The staging bucket is shared, and this
-# grant covers the whole bucket: CI can overwrite other agents' staging files too. Accepted,
-# not overlooked. The bucket must use uniform bucket-level access: Cloud Storage rejects a
-# federated principal's writes to a bucket with fine-grained ACLs (412 on upload).
+# Upload the pickle, requirements and dependencies. The staging bucket is shared by every
+# agent of the project, so the grant is limited to this agent's folder: the SDK writes only
+# under `<agent_slug>/` (deploy.py's gcs_dir_name), and a pickle that CI could replace in
+# another agent's folder would run under that agent's identity.
+#
+# The condition has no clause for the bucket itself. The SDK never lists objects, and
+# listing would reveal every other agent's file names; reading the bucket's metadata
+# (storage.buckets.get) is the separate ci_staging_bucket grant below. The trailing slash
+# keeps `my-agent` from also matching `my-agent-2/`.
+#
+# Conditions on a bucket need uniform bucket-level access, which CI needs anyway: Cloud
+# Storage rejects a federated principal's writes to a bucket with fine-grained ACLs (412).
 resource "google_storage_bucket_iam_member" "ci_staging" {
   count = local.ci_enabled ? 1 : 0
 
   bucket = var.staging_bucket
   role   = "roles/storage.objectAdmin"
   member = local.ci_principal
+
+  condition {
+    title       = "${var.agent_slug}-staging-only"
+    description = "Objects under ${var.agent_slug}/ only."
+    expression  = "resource.name.startsWith(\"projects/_/buckets/${var.staging_bucket}/objects/${var.agent_slug}/\")"
+  }
 }
 
 # The SDK reads the staging bucket's metadata before uploading (storage.buckets.get),

@@ -384,8 +384,10 @@ Consequences worth knowing:
   grant on the project. Revoking one agent's access does not touch its siblings, and Cloud
   Logging attributes activity to the agent that did it.
 - **CI is scoped to one agent too.** `infra/agent/ci.tf` lets the repository update only its
-  own engine and read only its own state prefix. The staging bucket and
-  `serviceUsageConsumer` stay project-wide, because the SDK uploads to the bucket root.
+  own engine, read only its own state prefix and write only its own `<project_slug>/` folder of
+  the staging bucket. The SDK uploads under `gcs_dir_name`, never to the bucket root, so the
+  folder condition costs nothing. Reading the bucket's metadata and `serviceUsageConsumer`
+  stay project-wide.
 - **`make setup-monitoring` may attach alert policies to an existing notification channel.**
   The display names are per-agent so they will not overwrite a sibling's, but if anyone is
   on-call for the project, check the channels first or skip that step.

@@ -27,9 +27,9 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   google-adk 2.x.
 
 - **`deploy.yml` signs in through Workload Identity Federation instead of the `GCP_SA_KEY`
-  secret.** `infra/agent/ci.tf` grants the repository access to its own engine and state
-  prefix only, plus the shared staging bucket. `setup_gcp.sh` no longer creates a service
-  account or mints a key, and `AGENT_ENGINE_SERVICE_ACCOUNT` is gone.
+  secret.** `infra/agent/ci.tf` grants the repository access to its own engine, its own state
+  prefix and its own folder of the shared staging bucket. `setup_gcp.sh` no longer creates a
+  service account or mints a key, and `AGENT_ENGINE_SERVICE_ACCOUNT` is gone.
 
 - **The deployed agent is traced by Agent Engine's built-in telemetry**
   (`GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY=true`). Agent Identity tokens are
@@ -42,6 +42,8 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   generated projects; `ci.yml` runs `make infra-test`, offline against a mocked provider.
 - The health check retries while new IAM grants propagate (`--attempts`).
 - `setup_gcp.sh` creates the shared OpenTofu state bucket `<project>-agents-state`.
+- CI's staging access is limited to the agent's own folder `<project_slug>/`, and its names
+  are validated before they enter the IAM condition.
 - `validate-template.yml` and `make validate` run the generated project's OpenTofu checks.
 
 ### Upgrading an existing project

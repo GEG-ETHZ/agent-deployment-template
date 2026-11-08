@@ -179,3 +179,55 @@ run "ci_uploads_to_the_shared_staging_bucket_and_bills_the_project" {
     error_message = "CI must be allowed to bill its API calls to the project."
   }
 }
+
+run "ci_writes_only_to_this_agents_staging_folder" {
+  command = apply
+
+  variables {
+    github_repository = "example-org/test-repo"
+  }
+
+  # The trailing slash keeps `test-agent` from also matching `test-agent-2/`.
+  assert {
+    condition     = google_storage_bucket_iam_member.ci_staging[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/test-staging/objects/test-agent/\")"
+    error_message = "CI's staging access must be limited to this agent's folder."
+  }
+
+  # The SDK never lists the bucket, so the grant must not allow it: listing would show
+  # every other agent's file names.
+  assert {
+    condition     = !strcontains(google_storage_bucket_iam_member.ci_staging[0].condition[0].expression, "storage.googleapis.com/Bucket")
+    error_message = "CI's staging access must not allow listing the bucket."
+  }
+}
+
+# The names below go into a CEL string, so a quote or a scheme must be refused.
+run "agent_slug_with_a_quote_is_refused" {
+  command = plan
+
+  variables {
+    agent_slug = "bad\"slug"
+  }
+
+  expect_failures = [var.agent_slug]
+}
+
+run "staging_bucket_with_a_scheme_is_refused" {
+  command = plan
+
+  variables {
+    staging_bucket = "gs://test-staging"
+  }
+
+  expect_failures = [var.staging_bucket]
+}
+
+run "state_bucket_with_a_quote_is_refused" {
+  command = plan
+
+  variables {
+    state_bucket = "bad\"bucket"
+  }
+
+  expect_failures = [var.state_bucket]
+}

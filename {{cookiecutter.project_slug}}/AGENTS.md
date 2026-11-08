@@ -407,7 +407,7 @@ it, what a code deploy needs:
 | Grant | Scope | Why |
 |---|---|---|
 | `roles/aiplatform.user` | this agent's engine only | update its code, query it in the health check |
-| `roles/storage.objectAdmin` | the shared staging bucket, whole bucket | upload the pickle and its files. Not narrowed to this agent's folder, by choice: CI can overwrite other agents' staging files |
+| `roles/storage.objectAdmin` | the shared staging bucket, objects under `<agent>/` only | upload the pickle and its files. CI cannot write, overwrite or list other agents' folders: a pickle it replaced there would run under that agent's identity |
 | `roles/storage.bucketViewer` | the shared staging bucket | the SDK reads the bucket's metadata (`storage.buckets.get`) before uploading |
 | `roles/storage.objectViewer` | the state bucket, objects under `<agent>/` (plus listing) | read the engine name |
 | `roles/serviceusage.serviceUsageConsumer` | the project | bill its API calls to the project; no data access |
@@ -699,6 +699,10 @@ Run `cz bump` (via `uv run cz bump`) to cut a release and move unreleased entrie
 - **Missing logs are usually the project's log sink, not the agent.** A disabled `_Default`
   sink discards every non-audit entry however it was written, including a direct
   `gcloud logging write`. Check `gcloud logging sinks describe _Default` first.
+- **CI can write only to `<agent>/` in the staging bucket.** The folder is the project name in
+  `pyproject.toml` (`gcs_dir_name`) and the grant's condition uses `AGENT_SLUG` from the
+  Makefile. If they differ, every CI deploy fails with a `403` on upload;
+  `tests/unit/test_agent_slug.py` checks they match. Renaming the project means renaming both.
 - **The staging bucket and state bucket are shared by every agent in the project.**
   `setup_gcp.sh` saying "already exists, skipping" is the intended way a second agent joins.
   Deleting either during a cleanup breaks sibling agents.
