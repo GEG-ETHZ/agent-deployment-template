@@ -15,7 +15,7 @@ mock_provider "google" {
 
   mock_data "google_iam_workload_identity_pool" {
     defaults = {
-      name = "projects/111111111111/locations/global/workloadIdentityPools/github-actions"
+      name = "projects/111111111111/locations/global/workloadIdentityPools/github-oidc"
     }
   }
 }
@@ -26,6 +26,7 @@ variables {
   agent_slug     = "test-agent"
   staging_bucket = "test-staging"
   state_bucket   = "test-state"
+  environment    = "dev"
 }
 
 run "engine_is_created_without_a_package" {
@@ -106,7 +107,11 @@ run "no_ci_grants_without_a_github_repository" {
   }
 }
 
-run "ci_principal_is_the_repository_in_the_existing_pool" {
+# A grant on the repository alone would match a workflow on any branch, with or without an
+# `environment:`, so the environment's required reviewers would not apply to it. The mapped
+# attribute carries the environment, which GitHub only puts in a token once that
+# environment's protection rules have passed.
+run "ci_principal_is_one_repository_in_one_environment" {
   command = apply
 
   variables {
@@ -114,9 +119,38 @@ run "ci_principal_is_the_repository_in_the_existing_pool" {
   }
 
   assert {
-    condition     = output.ci_principal == "principalSet://iam.googleapis.com/projects/111111111111/locations/global/workloadIdentityPools/github-actions/attribute.repository/example-org/test-repo"
-    error_message = "ci_principal is not the repository's principalSet in the pool."
+    condition     = output.ci_principal == "principalSet://iam.googleapis.com/projects/111111111111/locations/global/workloadIdentityPools/github-oidc/attribute.repository_environment/example-org/test-repo:dev"
+    error_message = "ci_principal is not the repository in the dev environment, in the github-oidc pool."
   }
+}
+
+run "prod_trusts_only_the_prod_environment" {
+  command = apply
+
+  variables {
+    github_repository = "example-org/test-repo"
+    environment       = "prod"
+  }
+
+  assert {
+    condition     = endswith(output.ci_principal, "/attribute.repository_environment/example-org/test-repo:prod")
+    error_message = "ci_principal must end in the prod environment."
+  }
+
+  assert {
+    condition     = !strcontains(output.ci_principal, "attribute.repository/")
+    error_message = "ci_principal must not be the repository-wide principal."
+  }
+}
+
+run "environment_must_be_dev_or_prod" {
+  command = plan
+
+  variables {
+    environment = "staging"
+  }
+
+  expect_failures = [var.environment]
 }
 
 run "ci_may_update_only_this_engine" {

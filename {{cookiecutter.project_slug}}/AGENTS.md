@@ -390,7 +390,7 @@ which would make both environments deploy to the same place. None of them is a s
 |---|---|---|---|
 | `GOOGLE_CLOUD_PROJECT` | Variable | Per environment | That environment's GCP project ID |
 | `GOOGLE_CLOUD_LOCATION` | Variable | Per environment | Vertex AI region |
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Variable | Per environment | `projects/<number>/locations/global/workloadIdentityPools/github-actions/providers/github` |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Variable | Per environment | `projects/<number>/locations/global/workloadIdentityPools/github-oidc/providers/github` |
 | `MODEL_PROVIDER` | Variable | Per environment | `google` \| `anthropic` \| `openai` \| `litellm` |
 | `GCS_STAGING_BUCKET` | Variable | Per environment | Optional — derived from the project id unless you renamed the bucket |
 | `GOOGLE_API_KEY` | Secret | Repository-level | Used only by `eval.yml` (promptfoo), not per-environment  <!-- pragma: allowlist secret --> |
@@ -399,10 +399,10 @@ The engine name is not configured anywhere: `make deploy-code` reads it from the
 OpenTofu state, as a local deploy does.
 
 **How CI gets into GCP.** `google-github-actions/auth` exchanges the run's GitHub OIDC token in
-the existing pool `github-actions` (provider `github`, which accepts only this organisation's
-repositories). There is no service account: the APIs see the repository itself,
-`principalSet://…/attribute.repository/<owner>/<repo>`. `infra/agent/ci.tf` grants it, and only
-it, what a code deploy needs:
+the existing pool `github-oidc` (provider `github`, which accepts only this organisation's
+repositories). There is no service account: the APIs see this repository in one environment,
+`principalSet://…/attribute.repository_environment/<owner>/<repo>:<env>`. `infra/agent/ci.tf`
+grants it, and only it, what a code deploy needs:
 
 | Grant | Scope | Why |
 |---|---|---|
@@ -414,11 +414,16 @@ it, what a code deploy needs:
 
 The repository comes from `GITHUB_REPOSITORY` (set by GitHub) or the `origin` remote, and the grants
 are made by a local `make infra-apply`. CI never applies, so it holds no IAM rights. The pool
-and provider are owned by another repository's OpenTofu and only referenced here.
+and provider are owned by the `geg-core-infra` repository (module `github-oidc-pool`) and only
+referenced here.
 
-Any branch of the repository can obtain these credentials; the pool maps no branch or
-environment. Restrict deploys on the GitHub side: give `prod` a required reviewer and a
-deployment-branch rule.
+**The environment is part of the grant, so the GitHub rules on it apply.** Only a job that
+declares `environment: <env>` receives a token for that environment, and GitHub issues it only
+after the environment's protection rules have passed. A workflow on a feature branch that names
+no environment, or the other one, gets nothing. Without that, a grant on the repository alone
+would let any branch's workflow deploy to `prod` and skip its reviewers. So protect `prod` on
+the GitHub side: a required reviewer and a deployment-branch rule limited to `main`. `dev` may
+stay open.
 
 Bootstrap each environment's GCP project with `make setup-gcp ENV=dev` / `make setup-gcp
 ENV=prod` (see [setup_gcp.sh](deployment/scripts/setup_gcp.sh)) — it prints which variables to

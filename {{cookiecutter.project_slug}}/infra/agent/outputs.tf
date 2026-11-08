@@ -4,7 +4,7 @@ output "agent_resource_name" {
 }
 
 output "ci_principal" {
-  description = "The GitHub repository's WIF principal deploy.yml runs as; null without github_repository."
+  description = "The WIF principal deploy.yml runs as: the GitHub repository in one environment; null without github_repository."
   value       = local.ci_principal
 }
 

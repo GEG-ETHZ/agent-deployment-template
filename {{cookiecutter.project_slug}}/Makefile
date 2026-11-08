@@ -20,7 +20,8 @@ TOFU_VARS = -var="project_id=$(GOOGLE_CLOUD_PROJECT)" \
 	-var="agent_slug=$(AGENT_SLUG)" \
 	-var="staging_bucket=$(STAGING_BUCKET)" \
 	-var="state_bucket=$(STATE_BUCKET)" \
-	-var="github_repository=$(GITHUB_REPOSITORY)"
+	-var="github_repository=$(GITHUB_REPOSITORY)" \
+	-var="environment=$(ENV)"
 # The engine of the environment infra-init last selected, read from the OpenTofu state.
 ENGINE_NAME = $$(tofu -chdir=$(INFRA_DIR) output -raw agent_resource_name)
 

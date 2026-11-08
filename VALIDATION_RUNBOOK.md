@@ -359,12 +359,12 @@ resources are **shared across every agent in the project**; the rest are per-age
 | --- | --- | --- |
 | Staging bucket | **shared** | `gs://<project>-agent-staging` (uniform bucket-level access) |
 | OpenTofu state bucket | **shared** | `gs://<project>-agents-state` |
-| Workload Identity pool | **shared** | `github-actions`, provider `github` |
+| Workload Identity pool | **shared** | `github-oidc`, provider `github` (managed in `geg-core-infra`) |
 | Staging subfolder | per-agent | `gs://<project>-agent-staging/<project_slug>/` |
 | OpenTofu state | per-agent | `gs://<project>-agents-state/<project_slug>/<env>/` |
 | Agent Engine resource | per-agent | display name = `project_slug`, created by `infra/agent/` |
 | Runtime identity | per-agent | the engine's Agent Identity (`spec.effective_identity`) |
-| CI principal | per-agent | `principalSet://…/attribute.repository/<org>/<repo>` |
+| CI principal | per-agent, per-environment | `principalSet://…/attribute.repository_environment/<org>/<repo>:<env>` |
 | Dashboard | per-agent | `"<project_name> — Agent Engine"` |
 | Alert policies | per-agent | `"<project_name> — high error rate"` / `"— high p95 latency"` |
 
@@ -383,11 +383,11 @@ Consequences worth knowing:
   and `logging.logWriter`; model calls come from the Google-managed `agentDefaultAccess`
   grant on the project. Revoking one agent's access does not touch its siblings, and Cloud
   Logging attributes activity to the agent that did it.
-- **CI is scoped to one agent too.** `infra/agent/ci.tf` lets the repository update only its
-  own engine, read only its own state prefix and write only its own `<project_slug>/` folder of
-  the staging bucket. The SDK uploads under `gcs_dir_name`, never to the bucket root, so the
-  folder condition costs nothing. Reading the bucket's metadata and `serviceUsageConsumer`
-  stay project-wide.
+- **CI is scoped to one agent and one environment too.** `infra/agent/ci.tf` lets the
+  repository, in one GitHub environment, update only its own engine, read only its own state
+  prefix and write only its own `<project_slug>/` folder of the staging bucket. The SDK
+  uploads under `gcs_dir_name`, never to the bucket root, so the folder condition costs
+  nothing. Reading the bucket's metadata and `serviceUsageConsumer` stay project-wide.
 - **`make setup-monitoring` may attach alert policies to an existing notification channel.**
   The display names are per-agent so they will not overwrite a sibling's, but if anyone is
   on-call for the project, check the channels first or skip that step.
@@ -398,11 +398,16 @@ Consequences worth knowing:
 in the project's pool, and the APIs see the repository itself as the caller. Nothing is
 stored as a secret. What has to exist first:
 
-- the pool and its `github` provider, mapping `attribute.repository` (shared, once per
-  project; `setup_gcp.sh` prints the provider name)
-- `make infra-apply` run with `GITHUB_REPOSITORY=<org>/<repo>` (derived from the `origin`
-  remote), so `ci.tf` creates the repository's grants
+- the pool `github-oidc` and its `github` provider, mapping `attribute.repository_environment`
+  (shared, once per project, managed in `geg-core-infra`; `setup_gcp.sh` prints the provider
+  name)
+- `make infra-apply` run for the environment, with `GITHUB_REPOSITORY=<org>/<repo>` (derived
+  from the `origin` remote), so `ci.tf` creates the repository's grants for it
 - the repository variables `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GOOGLE_CLOUD_PROJECT`
+
+A job holds those grants only if it names the environment (`environment: dev|prod`), and
+GitHub issues that claim only after the environment's protection rules have passed. A
+workflow on a feature branch that names none gets nothing.
 
 CI never runs `tofu apply`. It reads the engine name from the state and ships code to it.
 

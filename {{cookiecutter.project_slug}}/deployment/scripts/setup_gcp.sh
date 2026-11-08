@@ -95,7 +95,7 @@ echo "CI deploys (deploy.yml) log in through Workload Identity Federation, with 
 echo "Add these as '$GH_ENVIRONMENT' environment variables in GitHub:"
 echo "  GOOGLE_CLOUD_PROJECT           = $PROJECT"
 echo "  GOOGLE_CLOUD_LOCATION          = $LOCATION"
-echo "  GCP_WORKLOAD_IDENTITY_PROVIDER = projects/$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')/locations/global/workloadIdentityPools/github-actions/providers/github"
+echo "  GCP_WORKLOAD_IDENTITY_PROVIDER = projects/$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')/locations/global/workloadIdentityPools/github-oidc/providers/github"
 echo "Then run 'make infra-apply ENV=$GH_ENVIRONMENT' to grant the repository its access."
 echo ""
 echo "Update your .env file with:"

@@ -83,7 +83,8 @@ jobs:
           ref: "{% raw %}${{ github.event.inputs.ref || github.event.workflow_run.head_sha || github.sha }}{% endraw %}"
 
       # Keyless: the run's OIDC token is exchanged in the Workload Identity pool, and the
-      # APIs see this repository itself as the caller. Its grants are in infra/agent/ci.tf.
+      # APIs see this repository in this job's environment as the caller. Its grants are in
+      # infra/agent/ci.tf.
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:

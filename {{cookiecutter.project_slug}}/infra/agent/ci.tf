@@ -3,7 +3,14 @@
 # CI logs in through Workload Identity Federation, with no service account and no key:
 # GitHub's OIDC token for a run of `github_repository` is exchanged in the existing pool
 # for a short-lived token, and the APIs see the repository itself as the caller. Every
-# grant below names that one repository, so other repositories in the pool get nothing.
+# grant below names that one repository in one environment, so other repositories in the
+# pool, and this repository's other environments, get nothing.
+#
+# The environment is part of the principal on purpose. A grant on the repository alone
+# matches a workflow on any branch, with or without an `environment:`, so the
+# environment's required reviewers and branch rules would not apply to it. GitHub only puts
+# `environment:<name>` in a token after those rules have passed, so this grant is gated by
+# them. This is what makes a protection rule on the `prod` environment mean something.
 #
 # The pool and its provider are referenced, never managed here: they are shared by every
 # repository of the organisation, and two states owning them would fight over them.
@@ -22,7 +29,7 @@ data "google_iam_workload_identity_pool" "github" {
 }
 
 locals {
-  ci_principal = local.ci_enabled ? "principalSet://iam.googleapis.com/${data.google_iam_workload_identity_pool.github[0].name}/attribute.repository/${var.github_repository}" : null
+  ci_principal = local.ci_enabled ? "principalSet://iam.googleapis.com/${data.google_iam_workload_identity_pool.github[0].name}/attribute.repository_environment/${var.github_repository}:${var.environment}" : null
 }
 
 # Update and query this engine only: not the project, where it could reach every agent.

@@ -44,10 +44,20 @@ variable "github_repository" {
   default     = ""
 }
 
-variable "wif_pool_id" {
-  description = "Existing Workload Identity pool that trusts GitHub Actions tokens. Referenced, never managed here."
+variable "environment" {
+  description = "dev or prod: the GitHub environment whose deploys may ship this agent's code. The Makefile passes ENV. Only runs of that environment, after its protection rules, hold the CI grants."
   type        = string
-  default     = "github-actions"
+
+  validation {
+    condition     = contains(["dev", "prod"], var.environment)
+    error_message = "environment must be \"dev\" or \"prod\"."
+  }
+}
+
+variable "wif_pool_id" {
+  description = "Existing Workload Identity pool that trusts GitHub Actions tokens and maps attribute.repository_environment. Referenced, never managed here."
+  type        = string
+  default     = "github-oidc"
 }
 
 # Every Agent Engine agent identity in the project also holds roles/aiplatform.agentDefaultAccess

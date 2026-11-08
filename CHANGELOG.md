@@ -27,9 +27,16 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   google-adk 2.x.
 
 - **`deploy.yml` signs in through Workload Identity Federation instead of the `GCP_SA_KEY`
-  secret.** `infra/agent/ci.tf` grants the repository access to its own engine, its own state
-  prefix and its own folder of the shared staging bucket. `setup_gcp.sh` no longer creates a
-  service account or mints a key, and `AGENT_ENGINE_SERVICE_ACCOUNT` is gone.
+  secret.** `infra/agent/ci.tf` grants the repository, in one GitHub environment, access to
+  its own engine, its own state prefix and its own folder of the shared staging bucket.
+  `setup_gcp.sh` no longer creates a service account or mints a key, and
+  `AGENT_ENGINE_SERVICE_ACCOUNT` is gone.
+
+- **CI's grants are made per environment, through the `github-oidc` pool.** A grant on the
+  repository alone matches a workflow on any branch, with or without an `environment:`, so a
+  required reviewer on `prod` never applied to it. The principal is now
+  `…/attribute.repository_environment/<org>/<repo>:<env>`, which GitHub only issues after the
+  environment's protection rules have passed. The pool must map that attribute.
 
 - **The deployed agent is traced by Agent Engine's built-in telemetry**
   (`GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY=true`). Agent Identity tokens are
@@ -49,8 +56,8 @@ MAJOR/MINOR/PATCH and how releases are tagged.
 ### Upgrading an existing project
 
 The engine is re-created, so the agent gets a new resource ID and a new identity. Prerequisites
-in the GCP project: a Workload Identity pool `github-actions` with a provider `github` that maps
-`attribute.repository`, and uniform bucket-level access on the staging bucket (a federated
+in the GCP project: a Workload Identity pool `github-oidc` with a provider `github` that maps
+`attribute.repository_environment`, and uniform bucket-level access on the staging bucket (a federated
 principal's upload fails with 412 otherwise).
 
 1. `cruft update`, then `make setup-gcp ENV=dev` to create the state bucket.
