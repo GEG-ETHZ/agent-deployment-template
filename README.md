@@ -3,8 +3,8 @@
   <img alt="ADK Agent Deployment Template — generate a production-ready Google ADK agent repository and deploy it to Vertex AI Agent Engine, with observability, evals and CI already wired up." src="docs/assets/banner-light.svg">
 </picture>
 
-[![CI](https://img.shields.io/github/actions/workflow/status/danielvogler/agent-deployment-template/ci.yml?branch=main&style=flat&label=CI&labelColor=0E0E10&color=0E0E10)](https://github.com/danielvogler/agent-deployment-template/actions/workflows/ci.yml)
-[![Template validation](https://img.shields.io/github/actions/workflow/status/danielvogler/agent-deployment-template/validate-template.yml?branch=main&style=flat&label=template&labelColor=0E0E10&color=0E0E10)](https://github.com/danielvogler/agent-deployment-template/actions/workflows/validate-template.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/GEG-ETHZ/agent-deployment-template/ci.yml?branch=main&style=flat&label=CI&labelColor=0E0E10&color=0E0E10)](https://github.com/GEG-ETHZ/agent-deployment-template/actions/workflows/ci.yml)
+[![Template validation](https://img.shields.io/github/actions/workflow/status/GEG-ETHZ/agent-deployment-template/validate-template.yml?branch=main&style=flat&label=template&labelColor=0E0E10&color=0E0E10)](https://github.com/GEG-ETHZ/agent-deployment-template/actions/workflows/validate-template.yml)
 [![License](https://img.shields.io/badge/license-MIT-0E0E10?style=flat&labelColor=0E0E10)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-0E0E10?style=flat&labelColor=0E0E10&logo=python&logoColor=white)](pyproject.toml)
 [![uv](https://img.shields.io/badge/uv-managed-0E0E10?style=flat&labelColor=0E0E10&logo=uv&logoColor=white)](https://docs.astral.sh/uv/)
