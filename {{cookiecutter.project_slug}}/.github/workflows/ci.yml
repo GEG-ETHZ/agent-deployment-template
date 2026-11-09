@@ -43,6 +43,21 @@ jobs:
       - name: Type check
         run: uv run pyright
 
+  infra:
+    name: OpenTofu fmt, validate & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.13.2"
+          tofu_wrapper: false
+
+      # Offline: no backend, mocked provider. Covers the agent's and CI's IAM grants.
+      - name: OpenTofu checks
+        run: make infra-test
+
   test:
     name: Unit tests
     runs-on: ubuntu-latest

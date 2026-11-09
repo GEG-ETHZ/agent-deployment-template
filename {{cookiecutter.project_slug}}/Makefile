@@ -1,9 +1,32 @@
 .PHONY: install dev lint format typecheck test test-unit test-integration eval \
         deploy-dev deploy-prod rollback health-check logs traces setup-gcp setup-monitoring \
-        pre-commit clean help
+        deploy-code infra-init infra-apply infra-import infra-test pre-commit clean help
 
 -include .env
 export
+
+# OpenTofu that creates the agent's engine and Agent Identity and grants its roles. State
+# sits in the bucket every agent of the project shares, one prefix per agent and env.
+INFRA_DIR := infra/agent
+AGENT_SLUG := {{cookiecutter.project_slug}}
+STATE_BUCKET ?= $(GOOGLE_CLOUD_PROJECT)-agents-state
+GOOGLE_CLOUD_LOCATION ?= europe-west1
+STAGING_BUCKET = $(patsubst gs://%,%,$(or $(GCS_STAGING_BUCKET),$(GOOGLE_CLOUD_PROJECT)-agent-staging))
+# The repository whose deploy.yml may ship this agent's code (grants in infra/agent/ci.tf).
+# Committed, not read from `origin`: with no remote an apply would remove the grants, and
+# with a fork as `origin` it would move them to the fork. `:=` also beats the environment,
+# where GitHub Actions sets GITHUB_REPOSITORY itself. Empty gives CI no access and needs no
+# Workload Identity pool: `make deploy-dev GITHUB_REPOSITORY=`.
+GITHUB_REPOSITORY := {{cookiecutter.github_org}}/{{cookiecutter.project_slug}}
+TOFU_VARS = -var="project_id=$(GOOGLE_CLOUD_PROJECT)" \
+	-var="region=$(GOOGLE_CLOUD_LOCATION)" \
+	-var="agent_slug=$(AGENT_SLUG)" \
+	-var="staging_bucket=$(STAGING_BUCKET)" \
+	-var="state_bucket=$(STATE_BUCKET)" \
+	-var="github_repository=$(GITHUB_REPOSITORY)" \
+	-var="environment=$(ENV)"
+# The engine of the environment infra-init last selected, read from the OpenTofu state.
+ENGINE_NAME = $$(tofu -chdir=$(INFRA_DIR) output -raw agent_resource_name)
 
 help:
 	@echo ""
@@ -18,8 +41,12 @@ help:
 	@echo "  test-unit         Run unit tests only"
 	@echo "  test-integration  Run integration tests (mocked LLM, no API keys needed)"
 	@echo "  eval              Run promptfoo skill evaluations"
-	@echo "  deploy-dev   Deploy to Agent Engine (dev)"
-	@echo "  deploy-prod  Deploy to Agent Engine (prod)"
+	@echo "  deploy-dev   Apply infra/agent (engine, identity, roles), ship the code, health-check"
+	@echo "  deploy-prod  Same, for prod"
+	@echo "  deploy-code  Ship the code to the existing engine, no apply (what CI runs): ENV=dev|prod"
+	@echo "  infra-apply  Create or update the engine and its grants: make infra-apply ENV=dev|prod"
+	@echo "  infra-import Adopt an existing engine: make infra-import ENV=dev ENGINE=projects/..."
+	@echo "  infra-test   Run the OpenTofu tests (offline, mocked provider)"
 	@echo "  rollback     Redeploy a previous git ref: make rollback REF=<tag> [ENV=prod|dev]"
 	@echo "  health-check Run a standalone smoke test against the deployed Agent Engine resource"
 	@echo "  logs         Stream Cloud Logging output for this agent"
@@ -57,11 +84,48 @@ test-integration:
 eval:
 	uv run python tests/evals/run_eval.py
 
-deploy-dev:
-	uv run python deployment/deploy.py --env dev
+# Apply first: OpenTofu creates the engine, which gives the agent its identity, and grants
+# that identity its roles before any code runs. deploy-code then ships the code to it.
+deploy-dev deploy-prod: deploy-%:
+	$(MAKE) infra-apply ENV=$*
+	$(MAKE) deploy-code ENV=$*
 
-deploy-prod:
-	uv run python deployment/deploy.py --env prod
+# Ship the code to the engine the ENV state names, then health-check it (retrying while
+# new grants propagate). Reads the state, never applies: this is what deploy.yml runs.
+deploy-code: infra-init
+	engine="$(ENGINE_NAME)" && \
+	AGENT_ENGINE_RESOURCE_NAME="$$engine" uv run python deployment/deploy.py --env $(ENV) && \
+	AGENT_ENGINE_RESOURCE_NAME="$$engine" uv run python deployment/scripts/health_check.py
+
+infra-init:
+	@if [ "$(ENV)" != "dev" ] && [ "$(ENV)" != "prod" ]; then \
+		echo "Usage: make infra-init ENV=dev|prod"; exit 1; \
+	fi
+	@if [ -z "$(GOOGLE_CLOUD_PROJECT)" ]; then \
+		echo "GOOGLE_CLOUD_PROJECT is not set (.env or environment)"; exit 1; \
+	fi
+	tofu -chdir=$(INFRA_DIR) init -reconfigure -input=false \
+		-backend-config="bucket=$(STATE_BUCKET)" \
+		-backend-config="prefix=$(AGENT_SLUG)/$(ENV)"
+
+infra-apply: infra-init
+	tofu -chdir=$(INFRA_DIR) apply -input=false $(TOFU_VARS)
+
+# One-time: bring an engine created outside OpenTofu under its state, so it keeps its ID
+# and identity instead of a second engine being created next to it.
+infra-import: infra-init
+	@if [ -z "$(ENGINE)" ]; then \
+		echo "Usage: make infra-import ENV=dev|prod ENGINE=projects/<p>/locations/<l>/reasoningEngines/<id>"; \
+		exit 1; \
+	fi
+	tofu -chdir=$(INFRA_DIR) import -input=false $(TOFU_VARS) \
+		google_vertex_ai_reasoning_engine.agent "$(ENGINE)"
+
+infra-test:
+	tofu -chdir=$(INFRA_DIR) fmt -check -recursive
+	tofu -chdir=$(INFRA_DIR) init -backend=false -input=false
+	tofu -chdir=$(INFRA_DIR) validate
+	tofu -chdir=$(INFRA_DIR) test
 
 rollback:
 	@if [ -z "$(REF)" ]; then \
@@ -70,12 +134,15 @@ rollback:
 	fi
 	@echo "Rolling back to $(REF) (env: $(or $(ENV),prod))..."
 	git fetch --tags --quiet
-	@branch=$$(git rev-parse --abbrev-ref HEAD); \
+	$(MAKE) infra-init ENV=$(or $(ENV),prod)
+	@engine="$(ENGINE_NAME)"; \
+	branch=$$(git rev-parse --abbrev-ref HEAD); \
 	git checkout $(REF) && \
-	uv run python deployment/deploy.py --env $(or $(ENV),prod); \
+	AGENT_ENGINE_RESOURCE_NAME="$$engine" uv run python deployment/deploy.py --env $(or $(ENV),prod); \
 	status=$$?; \
 	git checkout "$$branch"; \
-	exit $$status
+	[ $$status -eq 0 ] || exit $$status; \
+	AGENT_ENGINE_RESOURCE_NAME="$$engine" uv run python deployment/scripts/health_check.py
 
 health-check:
 	uv run python deployment/scripts/health_check.py

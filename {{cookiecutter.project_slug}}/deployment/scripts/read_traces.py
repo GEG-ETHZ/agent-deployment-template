@@ -159,8 +159,12 @@ def main(argv: list[str] | None = None) -> int:
         print("No traces matched.")
         print("")
         print("If the agent has served traffic in this window, check that the deployed")
-        print("resource has CLOUD_TRACE_ENABLED set -- redeploy with the current")
-        print("deploy.py, which sets it, then invoke a tool and retry.")
+        print(
+            "resource has GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY=true -- redeploy"
+        )
+        print(
+            "with the current deploy.py, which sets it, then invoke a tool and retry."
+        )
 
     print("")
     print(f"Console: {console_url(project)}")

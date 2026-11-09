@@ -13,7 +13,8 @@ This is a **cookiecutter template** repository. Running `cookiecutter .` (or `co
 
 ### Setup
 
-Prerequisites: Python 3.11+, `uv`, Node.js 22+ (promptfoo requires it), `cookiecutter`
+Prerequisites: Python 3.11+, `uv`, Node.js 22+ (promptfoo requires it), `cookiecutter`,
+OpenTofu 1.13+ (the generated `infra/agent/` is tested offline by `make validate`)
 
 ```bash
 make install    # install dev dependencies + pre-commit/commit-msg git hooks
@@ -170,6 +171,10 @@ Update `CHANGELOG.md` under `[Unreleased]` for every user-facing change before c
 - **The generated project's own pre-commit is a separate gate.** A change can pass this
   repo's checks and still leave generated projects failing theirs; `validate-template.yml`
   runs the generated set for exactly this reason.
+- **Re-creating a generated project's engine changes the agent's identity.** The engine runs
+  under its own Agent Identity, whose principal contains the engine ID. A template change that
+  forces `infra/agent/` to replace the engine (a new `identity_type`, a changed `region`
+  wiring) silently drops every grant to the old principal and is a MAJOR bump.
 - **A cookiecutter variable rename is a MAJOR bump.** It breaks `cruft update` for every
   existing generated project.
 

@@ -9,6 +9,82 @@ MAJOR/MINOR/PATCH and how releases are tagged.
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- **Generated agents run under their own Agent Identity instead of the shared
+  `agent-engine-sa`.** One service account for every agent in a project meant no agent could
+  be scoped or revoked on its own, and every log line named the same principal. Each engine
+  now has an identity of its own; `infra/agent/main.tf` grants it `cloudtrace.agent` and
+  `logging.logWriter`, and model calls come from the Google-managed
+  `aiplatform.agentDefaultAccess` grant on the project.
+
+- **OpenTofu creates the engine; `deploy.py` only ships code to it.** `infra/agent/` creates
+  the engine with Agent Identity and every IAM grant, keeping its state in
+  `gs://<project>-agents-state/<project_slug>/<env>/`. `make deploy-dev` applies OpenTofu,
+  updates the engine it created and then health-checks it. `deploy.py` stops when
+  `AGENT_ENGINE_RESOURCE_NAME` is unset instead of creating a second engine, and sends the
+  local Python version with the code, without which the API builds on 3.10 and cannot install
+  google-adk 2.x.
+
+- **`deploy.yml` signs in through Workload Identity Federation instead of the `GCP_SA_KEY`
+  secret.** `infra/agent/ci.tf` grants the repository, in one GitHub environment, access to
+  its own engine, its own state prefix and its own folder of the shared staging bucket.
+  `setup_gcp.sh` no longer creates a service account or mints a key, and
+  `AGENT_ENGINE_SERVICE_ACCOUNT` is gone.
+
+- **CI's grants are made per environment, through the `github-oidc` pool.** A grant on the
+  repository alone matches a workflow on any branch, with or without an `environment:`, so a
+  required reviewer on `prod` never applied to it. The principal is now
+  `…/attribute.repository_environment/<org>/<repo>:<env>`, which GitHub only issues after the
+  environment's protection rules have passed. The pool must map that attribute.
+
+- **The shared staging and state buckets are managed in `geg-core-infra`.** `setup_gcp.sh`
+  checks that they exist and stops, naming each missing one, instead of creating them with
+  its own settings.
+
+- **The deployed agent is traced by Agent Engine's built-in telemetry**
+  (`GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY=true`). Agent Identity tokens are
+  certificate-bound, and the agent's own Cloud Trace exporter is rejected with 401. Prompt and
+  response text is not captured.
+
+### Added
+
+- `make infra-apply`, `make infra-import`, `make infra-test` and `make deploy-code` in
+  generated projects; `ci.yml` runs `make infra-test`, offline against a mocked provider.
+- The health check retries while new IAM grants propagate (`--attempts`).
+- `setup_gcp.sh` checks that the shared staging and state buckets exist, stopping and naming
+  each missing one; it creates none.
+- CI's staging access is limited to the agent's own folder `<project_slug>/`, and its names
+  are validated before they enter the IAM condition.
+- `GITHUB_REPOSITORY` is committed in the `Makefile`, rendered from `github_org` and
+  `project_slug`, instead of read from the applier's `origin` remote; empty switches CI's
+  access off and needs no pool. Edit it if the repository has another name.
+- `setup_gcp.sh` warns when the `github-oidc` pool is missing from the project.
+- `/deploy` asks the person to run `make infra-apply` and never passes `-auto-approve`; it
+  ships the code with `make deploy-code`.
+- `validate-template.yml` and `make validate` run the generated project's OpenTofu checks.
+
+### Upgrading an existing project
+
+The engine is re-created, so the agent gets a new resource ID and a new identity. Prerequisites
+in the GCP project: a Workload Identity pool `github-oidc` with a provider `github` that maps
+`attribute.repository_environment`, and the shared staging and state buckets, private with
+uniform bucket-level access (a federated principal's upload fails with 412 otherwise), as
+`geg-core-infra` provides them.
+
+1. `cruft update`, then `make setup-gcp ENV=dev` to check that the shared buckets exist.
+2. Move every grant the agent relied on through `agent-engine-sa` beyond model, trace and log
+   access into a project-owned file such as `infra/agent/data_access.tf` (see "Adding
+   permissions for this agent" in the generated `AGENTS.md`). The new identity inherits nothing.
+3. `make deploy-dev`. OpenTofu creates the new engine and its grants, then the code is
+   shipped to it. Repeat with `ENV=prod`.
+4. Set the repository variables `GCP_WORKLOAD_IDENTITY_PROVIDER` (printed by `setup_gcp.sh`)
+   and `GOOGLE_CLOUD_PROJECT`; delete the secrets `GCP_SA_KEY` and `GOOGLE_CLOUD_PROJECT`, and
+   the variables `AGENT_ENGINE_RESOURCE_NAME` and `AGENT_ENGINE_SERVICE_ACCOUNT`.
+5. Point API consumers at the new engine, then delete the old one by hand.
+6. Leave `agent-engine-sa` in place while other projects still use it; delete any key file
+   minted for it.
+
 ## [2.1.0] - 2026-09-24
 
 ### Added

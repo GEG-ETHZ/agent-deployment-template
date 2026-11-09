@@ -16,13 +16,13 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
-  <img alt="One template, many agents, kept in sync. agent-deployment-template is a cookiecutter template holding what every agent gets: a Google ADK agent with tools and prompts; pytest, pyright, promptfoo evals and CodeQL; CI/CD that deploys only after CI passes; JSON logs and Cloud Trace spans. cruft create stamps an agent repository from it once, after eleven questions, and cruft update keeps each repository in step with every release; cruft-check.yml flags one that falls behind. After review, merge and CI, each repository deploys to Vertex AI Agent Engine in dev and prod, running as agent-engine-sa with logs and traces." src="docs/assets/hero-light.svg">
+  <img alt="One template, many agents, kept in sync. agent-deployment-template is a cookiecutter template holding what every agent gets: a Google ADK agent with tools and prompts; pytest, pyright, promptfoo evals and CodeQL; CI/CD that deploys only after CI passes; JSON logs and Cloud Trace spans. cruft create stamps an agent repository from it once, after eleven questions, and cruft update keeps each repository in step with every release; cruft-check.yml flags one that falls behind. After review, merge and CI, each repository deploys to Vertex AI Agent Engine in dev and prod, each under its own Agent Identity, with logs and traces." src="docs/assets/hero-light.svg">
 </picture>
 
 ---
 
 **Answer eleven questions and get an agent repository that already knows how to deploy
-itself, run as its own service account, and show you what it did afterwards.**
+itself, run under its own Agent Identity, and show you what it did afterwards.**
 
 ## Start here
 
@@ -128,19 +128,20 @@ flowchart TD
         DRIFT["cruft-check.yml<br/>template drift"]
     end
 
-    subgraph gcp["Google Cloud — agent-engine-sa"]
-        ENGINE["Vertex AI Agent Engine<br/>runs as agent-engine-sa"]
+    subgraph gcp["Google Cloud — the agent's own Agent Identity"]
+        TOFU["infra/agent (OpenTofu)<br/>engine · IAM grants · state"] --> ENGINE
+        ENGINE["Vertex AI Agent Engine<br/>runs as its Agent Identity"]
         ENGINE --> MODEL{MODEL_PROVIDER}
         MODEL --> G["Gemini 2.5 Pro"]
         MODEL --> CL["Claude via LiteLLM"]
         MODEL --> OAI["GPT-4o via LiteLLM"]
         ENGINE --> LOG["Cloud Logging<br/>reasoning_engine_stdout"]
-        ENGINE --> TRACE["Cloud Trace<br/>one span per tool call"]
+        ENGINE --> TRACE["Cloud Trace<br/>Agent Engine telemetry"]
         LOG --> LOGSH["make logs"]
         TRACE --> TRACESH["make traces"]
     end
 
-    DEPLOY -->|GCP_SA_KEY · actAs| ENGINE
+    DEPLOY -->|Workload Identity Federation · no key| ENGINE
     CLIENT["API consumer"] -->|REST| ENGINE
 
     classDef approval fill:#1A73E8,stroke:#1A73E8,color:#FFFFFF;
@@ -148,7 +149,9 @@ flowchart TD
 ```
 
 The blue node is the only point a human approves: everything upstream of it runs without
-GCP credentials, and everything downstream runs as `agent-engine-sa`.
+GCP credentials. Downstream, `deploy.yml` signs in keyless through Workload Identity
+Federation and may update only this agent's engine, and the agent runs under an identity
+of its own that no other agent shares.
 
 ## Cookiecutter variables
 

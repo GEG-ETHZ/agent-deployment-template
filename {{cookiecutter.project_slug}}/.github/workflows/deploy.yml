@@ -23,9 +23,9 @@ on:
         default: ""
         type: string
 
-# Nothing here writes through GITHUB_TOKEN: the GCP credential is a secret, not OIDC.
-# Moving this workflow to Workload Identity Federation means adding `id-token: write`
-# here -- without it, google-github-actions/auth fails to mint a token.
+# Nothing here writes through GITHUB_TOKEN. The deploy job alone also gets
+# `id-token: write`: Workload Identity Federation exchanges that OIDC token for GCP
+# credentials, so no key is stored anywhere.
 permissions:
   contents: read
 
@@ -64,19 +64,32 @@ jobs:
     if: "{% raw %}${{ needs.still-current.outputs.deploy == 'true' }}{% endraw %}"
     runs-on: ubuntu-latest
     environment: "{% raw %}${{ github.event.inputs.environment || 'prod' }}{% endraw %}"
+    permissions:
+      contents: read
+      # Lets google-github-actions/auth request GitHub's OIDC token for WIF.
+      id-token: write
     # One deploy per environment at a time, queued rather than cancelled mid-upload.
     concurrency:
       group: "deploy-{% raw %}${{ github.event.inputs.environment || 'prod' }}{% endraw %}"
       cancel-in-progress: false
+    env:
+      GOOGLE_CLOUD_PROJECT: "{% raw %}${{ vars.GOOGLE_CLOUD_PROJECT }}{% endraw %}"
+      GOOGLE_CLOUD_LOCATION: "{% raw %}${{ vars.GOOGLE_CLOUD_LOCATION }}{% endraw %}"
+      GCS_STAGING_BUCKET: "{% raw %}${{ vars.GCS_STAGING_BUCKET }}{% endraw %}"
+      MODEL_PROVIDER: "{% raw %}${{ vars.MODEL_PROVIDER || 'google' }}{% endraw %}"
     steps:
       - uses: actions/checkout@v4
         with:
           ref: "{% raw %}${{ github.event.inputs.ref || github.event.workflow_run.head_sha || github.sha }}{% endraw %}"
 
+      # Keyless: the run's OIDC token is exchanged in the Workload Identity pool, and the
+      # APIs see this repository in this job's environment as the caller. Its grants are in
+      # infra/agent/ci.tf.
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: "{% raw %}${{ secrets.GCP_SA_KEY }}{% endraw %}"
+          workload_identity_provider: "{% raw %}${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}{% endraw %}"
+          project_id: "{% raw %}${{ vars.GOOGLE_CLOUD_PROJECT }}{% endraw %}"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -88,26 +101,19 @@ jobs:
           enable-cache: true
           ignore-nothing-to-cache: true
 
+      # Only to read the engine name from the state; CI never applies.
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.13.2"
+          # The wrapper adds output to `tofu output -raw`, which the Makefile captures.
+          tofu_wrapper: false
+
       - run: uv sync
 
+      # Reads the engine from the environment's OpenTofu state, ships the code to it,
+      # then health-checks it -- the same target a local deploy runs after applying.
       - name: Deploy
-        run: uv run python deployment/deploy.py --env {% raw %}${{ github.event.inputs.environment || 'prod' }}{% endraw %}
-        env:
-          GOOGLE_CLOUD_PROJECT: "{% raw %}${{ secrets.GOOGLE_CLOUD_PROJECT }}{% endraw %}"
-          GOOGLE_CLOUD_LOCATION: "{% raw %}${{ vars.GOOGLE_CLOUD_LOCATION }}{% endraw %}"
-          GCS_STAGING_BUCKET: "{% raw %}${{ vars.GCS_STAGING_BUCKET }}{% endraw %}"
-          AGENT_ENGINE_RESOURCE_NAME: "{% raw %}${{ vars.AGENT_ENGINE_RESOURCE_NAME }}{% endraw %}"
-          AGENT_ENGINE_SERVICE_ACCOUNT: "{% raw %}${{ vars.AGENT_ENGINE_SERVICE_ACCOUNT }}{% endraw %}"
-          MODEL_PROVIDER: "{% raw %}${{ vars.MODEL_PROVIDER || 'google' }}{% endraw %}"
-
-      - name: Health check
-        run: |
-          export AGENT_ENGINE_RESOURCE_NAME="$(cat .agent_engine_resource)"
-          uv run python deployment/scripts/health_check.py
-        env:
-          GOOGLE_CLOUD_PROJECT: "{% raw %}${{ secrets.GOOGLE_CLOUD_PROJECT }}{% endraw %}"
-          GOOGLE_CLOUD_LOCATION: "{% raw %}${{ vars.GOOGLE_CLOUD_LOCATION }}{% endraw %}"
-          GCS_STAGING_BUCKET: "{% raw %}${{ vars.GCS_STAGING_BUCKET }}{% endraw %}"
+        run: make deploy-code ENV={% raw %}${{ github.event.inputs.environment || 'prod' }}{% endraw %}
 
       - name: Write deployment summary
         if: success()

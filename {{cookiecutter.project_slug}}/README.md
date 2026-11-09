@@ -63,17 +63,18 @@ flowchart TD
         DRIFT["cruft-check.yml<br/>template drift"]
     end
 
-    subgraph gcp["Google Cloud — agent-engine-sa"]
-        ENGINE["Vertex AI Agent Engine<br/>runs as agent-engine-sa"]
+    subgraph gcp["Google Cloud — the agent's own Agent Identity"]
+        ENGINE["Vertex AI Agent Engine<br/>runs as its Agent Identity"]
+        GRANTS["infra/agent<br/>OpenTofu creates it, grants its roles"] -.-> ENGINE
         ENGINE --> MODEL{MODEL_PROVIDER}
         MODEL --> G["Gemini 2.5 Pro"]
         MODEL --> CL["Claude via LiteLLM"]
         MODEL --> OAI["GPT-4o via LiteLLM"]
         ENGINE --> LOG["Cloud Logging<br/>reasoning_engine_stdout"]
-        ENGINE --> TRACE["Cloud Trace<br/>one span per tool call"]
+        ENGINE --> TRACE["Cloud Trace<br/>Agent Engine telemetry"]
     end
 
-    DEPLOY -->|GCP_SA_KEY · actAs| ENGINE
+    DEPLOY -->|"WIF, no key"| ENGINE
     CLIENT["API consumer"] -->|REST| ENGINE
 
     classDef approval fill:#1A73E8,stroke:#1A73E8,color:#FFFFFF;
@@ -81,8 +82,8 @@ flowchart TD
 ```
 
 The blue node is the only point a human approves: everything upstream of it runs without
-GCP credentials, and everything downstream runs as `agent-engine-sa`. See
-[Runtime identity](AGENTS.md#runtime-identity) for what that service account can do.
+GCP credentials. The deployed agent runs under its own Agent Identity, which holds only the
+roles `infra/agent` grants it. See [Runtime identity](AGENTS.md#runtime-identity).
 
 ## Quickstart
 
@@ -90,6 +91,7 @@ GCP credentials, and everything downstream runs as `agent-engine-sa`. See
 
 - Python {{cookiecutter.python_version}}+, [uv](https://docs.astral.sh/uv/), Node.js 22+ (promptfoo requires it)
 - [gcloud CLI](https://cloud.google.com/sdk/docs/install) authenticated
+- [OpenTofu](https://opentofu.org) 1.8+ to deploy (it grants the agent identity its roles)
 
 ### Local development
 
@@ -117,11 +119,15 @@ Application Default Credentials. `gcloud auth login` does **not** refresh ADC, a
 gcloud auth login
 gcloud auth application-default login
 
-make setup-gcp ENV=dev    # one-time GCP bootstrap for the dev project (creates SA, bucket, key)
+make setup-gcp ENV=dev    # one-time GCP bootstrap for the dev project (APIs; checks the shared buckets)
 make setup-gcp ENV=prod   # same, for the prod project (ENV defaults to prod if omitted)
-make deploy-dev           # deploy to dev Agent Engine resource
-make deploy-prod          # deploy to prod
+make deploy-dev           # OpenTofu: engine, identity, roles; ship the code; health-check
+make deploy-prod          # same, for prod
 ```
+
+`make deploy-*` asks you to confirm the OpenTofu plan before it creates or grants anything.
+Applying it needs an account that may change project IAM. Dev and prod get separate engines
+from separate OpenTofu state, so nothing about the engine goes into `.env`.
 
 `dev` and `prod` deploy via separate GitHub Environments with their own secrets and variables —
 see [Required GitHub Environments](AGENTS.md#required-github-environments) in `AGENTS.md` for
@@ -138,8 +144,12 @@ exactly what to configure and where `setup-gcp`'s output goes.
 | `make lint` | Ruff lint check |
 | `make format` | Ruff formatter |
 | `make typecheck` | Pyright |
-| `make deploy-dev` | Deploy to Agent Engine (dev) |
-| `make deploy-prod` | Deploy to Agent Engine (prod) |
+| `make deploy-dev` | Apply `infra/agent` (engine, identity, roles), ship the code, health-check |
+| `make deploy-prod` | Same, for prod |
+| `make infra-apply ENV=dev\|prod` | Create or update the engine and its grants only |
+| `make infra-import ENV=dev\|prod ENGINE=<name>` | One-time: adopt an engine created outside OpenTofu |
+| `make deploy-code ENV=dev\|prod` | Ship the code to the existing engine without applying (what CI runs) |
+| `make infra-test` | OpenTofu fmt, validate and tests (offline) |
 | `make rollback REF=<tag> [ENV=prod\|dev]` | Redeploy a previous git ref against the existing Agent Engine resource |
 | `make health-check` | Standalone smoke test against the deployed Agent Engine resource (no fresh deploy) |
 | `make logs` | Stream Cloud Logging |
@@ -157,11 +167,12 @@ exactly what to configure and where `setup-gcp`'s output goes.
 | `GOOGLE_CLOUD_PROJECT` | Deploy | GCP project ID |
 | `GOOGLE_CLOUD_LOCATION` | Deploy | Vertex AI region (default: `europe-west1`) |
 | `GCS_STAGING_BUCKET` | No | Defaults to `gs://$GOOGLE_CLOUD_PROJECT-agent-staging`; `gs://` optional |
-| `AGENT_ENGINE_RESOURCE_NAME` | No | Existing resource to update (omit = create new) |
-| `AGENT_ENGINE_SERVICE_ACCOUNT` | No | Defaults to `agent-engine-sa@$GOOGLE_CLOUD_PROJECT…`; override only if renamed |
+| `AGENT_ENGINE_RESOURCE_NAME` | No | Set by `make deploy-*` from the OpenTofu output; only for running `deploy.py` or the health check by hand |
+| `STATE_BUCKET` | No | OpenTofu state bucket; defaults to `$GOOGLE_CLOUD_PROJECT-agents-state` |
 | `MODEL_PROVIDER` | No | `google` \| `anthropic` \| `openai` \| `litellm` |
-| `CLOUD_TRACE_ENABLED` | No | Export a Cloud Trace span per tool call. Set automatically on deploy; off locally |
-| `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID` | With tracing | Project the exporter writes to; set automatically on deploy |
+| `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` | No | Set to `true` on deploy: Agent Engine's built-in tracing |
+| `CLOUD_TRACE_ENABLED` | No | Our own span exporter, local runs only (it fails under Agent Identity) |
+| `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID` | With `CLOUD_TRACE_ENABLED` | Project our exporter writes to |
 | `GOOGLE_API_KEY` | Local dev | Not needed on GCP (uses ADC) |
 | `ANTHROPIC_API_KEY` | If provider=anthropic | |
 | `OPENAI_API_KEY` | If provider=openai | |

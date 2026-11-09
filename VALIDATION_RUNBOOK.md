@@ -8,9 +8,31 @@ re-run the relevant section whenever `{{cookiecutter.project_slug}}/` changes.
 
 ## GCP gotchas — each of these costs real time if you don't know it up front
 
-- **Read `engine.api_resource.spec.service_account`, never `engine.service_account`.** The
-  latter returns `None` regardless of the real value — trusting it produces a false claim that
-  an agent has no service account set when it actually does.
+- **Read the agent's identity from `spec.effective_identity`.** OpenTofu exposes it as
+  `google_vertex_ai_reasoning_engine.agent.spec[0].effective_identity` and `make infra-apply`
+  prints it as `agent_principal`. It changes whenever the engine is re-created, so anything
+  that replaces the engine (a new `region`, a `tofu destroy`) also drops every grant made to
+  the old principal.
+- **Model calls work without a grant you made.** Google grants
+  `roles/aiplatform.agentDefaultAccess` to every agent identity of the project
+  (`principalSet://…/attribute.platformContainer/aiplatform/projects/<number>`) once the first
+  Agent Identity engine exists. Look for it in the project IAM policy before concluding a
+  grant in `infra/agent/` is missing.
+- **Agent Identity tokens are certificate-bound.** A client that cannot do mTLS gets
+  401 UNAUTHENTICATED, which is why the agent's own Cloud Trace exporter is off and Agent
+  Engine's built-in telemetry (`GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY=true`) records
+  the traces instead.
+- **The SDK's `update()` never sends `python_version`.** On an engine OpenTofu created, the
+  API then defaults to 3.10 and the container build fails on google-adk 2.x
+  (`No matching distribution found`). `deployment/python_version.py` adds it; a build log
+  showing Python 3.10 means that wrapper is not in effect.
+- **Workload Identity Federation needs uniform bucket-level access.** The shared buckets are
+  managed in `geg-core-infra`, which gives them that. A federated principal cannot write to a
+  bucket with fine-grained ACLs: the upload fails with 412. Check with
+  `gcloud storage buckets describe gs://<bucket> --format='value(uniform_bucket_level_access)'`.
+- **One update at a time per engine.** A second deploy while the first is still building
+  fails with `FAILED_PRECONDITION … Current state: UPDATING`. Wait for the operation, do not
+  retry in a loop.
 - **Check a log sink's `disabled` flag, not just its filter.**
   `gcloud logging sinks describe _Default --format='value(disabled)'`. A disabled `_Default`
   discards every non-audit entry however written, including a direct `gcloud logging write`,
@@ -36,24 +58,20 @@ re-run the relevant section whenever `{{cookiecutter.project_slug}}/` changes.
 
 ## Deploy/teardown recipe that works (no `.env` juggling)
 
-`DeploymentConfig` derives the bucket and SA from the project id, so a deploy needs one line of
-`.env`:
+The staging and state buckets are derived from the project id, and the engine name comes from
+the OpenTofu state, so a deploy needs one line of `.env`:
 
 ```bash
 echo GOOGLE_CLOUD_PROJECT=example-gcp-project > .env
-# add AGENT_ENGINE_RESOURCE_NAME=<resource> to UPDATE rather than create a second billable one
-make deploy-dev
+make deploy-dev   # OpenTofu creates or keeps the engine, then the code is shipped to it
 ```
 
-Teardown, in this order — the engine first, since it is the billable part:
+Teardown: OpenTofu removes the engine together with every grant made to its identity.
+`make -n infra-apply ENV=dev` prints the `-var` flags; run the same command with `destroy`:
 
 ```bash
-uv run python -c "
-import vertexai; from vertexai import agent_engines
-vertexai.init(project='example-gcp-project', location='europe-west1')
-a = agent_engines.get('<resource>')
-assert a.display_name == '<expected>'   # guard against deleting a sibling
-agent_engines.delete('<resource>', force=True)"
+make infra-init ENV=dev
+tofu -chdir=infra/agent destroy <the -var flags make -n infra-apply printed>
 gcloud storage rm -r "gs://example-gcp-project-agent-staging/<agent-slug>/"   # NEVER the bucket root
 gcloud monitoring dashboards delete <id> --project=example-gcp-project --quiet
 gcloud monitoring policies delete "projects/example-gcp-project/alertPolicies/<id>" --project=example-gcp-project --quiet
@@ -340,57 +358,60 @@ resources are **shared across every agent in the project**; the rest are per-age
 
 | Resource | Scope | Name |
 | --- | --- | --- |
-| Service account | **shared** | `agent-engine-sa@<project>` |
-| Staging bucket | **shared** | `gs://<project>-agent-staging` |
+| Staging bucket | **shared** | `gs://<project>-agent-staging` (managed in `geg-core-infra`; uniform bucket-level access) |
+| OpenTofu state bucket | **shared** | `gs://<project>-agents-state` (managed in `geg-core-infra`) |
+| Workload Identity pool | **shared** | `github-oidc`, provider `github` (managed in `geg-core-infra`) |
 | Staging subfolder | per-agent | `gs://<project>-agent-staging/<project_slug>/` |
-| Agent Engine resource | per-agent | display name = `project_name` |
+| OpenTofu state | per-agent | `gs://<project>-agents-state/<project_slug>/<env>/` |
+| Agent Engine resource | per-agent | display name = `project_slug`, created by `infra/agent/` |
+| Runtime identity | per-agent | the engine's Agent Identity (`spec.effective_identity`) |
+| CI principal | per-agent, per-environment | `principalSet://…/attribute.repository_environment/<org>/<repo>:<env>` |
 | Dashboard | per-agent | `"<project_name> — Agent Engine"` |
 | Alert policies | per-agent | `"<project_name> — high error rate"` / `"— high p95 latency"` |
 
 `config.py` states the intent directly — `gcs_dir_name=_project_name()`, commented "so
 artifacts land at `<bucket>/<project_slug>/` instead of the generic default". And
-`setup_gcp.sh`'s "already exists, skipping" is not a fallback: it is how the second and every
-later agent deliberately adopts the shared SA and bucket.
+`setup_gcp.sh` creates no bucket: it checks that the shared ones exist, which is how the second
+and every later agent joins, and stops naming each missing bucket.
 
-**So a shared team project is a valid target.** If it already holds `agent-engine-sa` and a
-staging bucket from an earlier agent, a new agent joins alongside rather than colliding. What
-is *not* safe is deleting the shared pieces during teardown — see the Teardown section, which
-is the one place this model genuinely changes what you run.
+**So a shared team project is a valid target.** A new agent joins alongside earlier ones
+rather than colliding. What is *not* safe is deleting the shared pieces during teardown — see
+the Teardown section, which is the one place this model genuinely changes what you run.
 
-Two consequences worth knowing:
+Consequences worth knowing:
 
-- **One shared identity means no per-agent isolation.** Every agent runs as
-  `agent-engine-sa` with `aiplatform.user`, `logging.logWriter` and `cloudtrace.agent`
-  project-wide, plus `objectAdmin` on the whole staging bucket. You cannot revoke or scope
-  one agent independently, and Cloud Logging attributes every agent's activity to the same
-  principal. Fine for a team dev project; wrong if two agents ever have different trust
-  levels. `SA_NAME` is hardcoded in `setup_gcp.sh` with no override, so per-agent service
-  accounts are not currently possible without editing the script.
+- **Each agent has its own identity.** `infra/agent/main.tf` grants it `cloudtrace.agent`
+  and `logging.logWriter`; model calls come from the Google-managed `agentDefaultAccess`
+  grant on the project. Revoking one agent's access does not touch its siblings, and Cloud
+  Logging attributes activity to the agent that did it.
+- **CI is scoped to one agent and one environment too.** `infra/agent/ci.tf` lets the
+  repository, in one GitHub environment, update only its own engine, read only its own state
+  prefix and write only its own `<project_slug>/` folder of the staging bucket. The SDK
+  uploads under `gcs_dir_name`, never to the bucket root, so the folder condition costs
+  nothing. Reading the bucket's metadata and `serviceUsageConsumer` stay project-wide.
 - **`make setup-monitoring` may attach alert policies to an existing notification channel.**
   The display names are per-agent so they will not overwrite a sibling's, but if anyone is
   on-call for the project, check the channels first or skip that step.
 
-### `setup_gcp.sh` generates a service-account key — against standard GCP conventions
+### CI deploys without a key
 
-The script ends with `gcloud iam service-accounts keys create` **and echoes the base64 key to
-stdout**, where it lands in terminal scrollback. Standard GCP conventions say never to create
-or download a service-account key file. That key exists only so `deploy.yml` can authenticate
-in GitHub Actions; a local `make deploy-dev` uses ADC and never reads it.
+`deploy.yml` signs in through Workload Identity Federation: GitHub's OIDC token is exchanged
+in the project's pool, and the APIs see the repository itself as the caller. Nothing is
+stored as a secret. What has to exist first:
 
-**Standing template finding, not yet fixed:** the key flow should be replaced with Workload
-Identity Federation. Until then, if you run `setup-gcp`, delete the key immediately —
-server-side as well as on disk:
+- the pool `github-oidc` and its `github` provider, mapping `attribute.repository_environment`
+  (shared, once per project, managed in `geg-core-infra`; `setup_gcp.sh` prints the provider
+  name and warns when the pool is missing)
+- `make infra-apply` run for the environment, so `ci.tf` creates the repository's grants for
+  it. The repository is the committed `GITHUB_REPOSITORY` in the `Makefile`, not the `origin`
+  remote; empty gives CI no access and needs no pool
+- the repository variables `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GOOGLE_CLOUD_PROJECT`
 
-```bash
-KEY_ID=$(python3 -c "import json;print(json.load(open('gcp-sa-key.json'))['private_key_id'])")
-gcloud iam service-accounts keys delete "$KEY_ID" \
-  --iam-account="agent-engine-sa@$ADK_TEST_PROJECT.iam.gserviceaccount.com" \
-  --project="$ADK_TEST_PROJECT" --quiet
-rm gcp-sa-key.json
-```
+A job holds those grants only if it names the environment (`environment: dev|prod`), and
+GitHub issues that claim only after the environment's protection rules have passed. A
+workflow on a feature branch that names none gets nothing.
 
-Deleting it server-side also makes the scrollback copy inert. Note it is a key on the
-**shared** service account, so a leak would affect every agent in the project.
+CI never runs `tofu apply`. It reads the engine name from the state and ships code to it.
 
 ### Generate a fresh project
 
@@ -410,7 +431,7 @@ git status --short   # expect empty — also confirms the cruft dirty-tree fix
 cp .env.example .env
 # GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION are pre-filled from the answers above.
 # Add: GCS_STAGING_BUCKET=gs://<project>-agent-staging
-# GOOGLE_API_KEY is NOT needed — the deployed agent runs on Vertex under the SA.
+# GOOGLE_API_KEY is NOT needed — the deployed agent runs on Vertex under its Agent Identity.
 ```
 
 Confirm the target before spending anything:
@@ -426,14 +447,13 @@ gcloud billing projects describe "$ADK_TEST_PROJECT" --format='value(billingEnab
 make setup-gcp ENV=dev
 ```
 
-- [ ] Expect **"already exists, skipping"** for the SA and bucket when targeting a project
-      that already hosts an agent. That is correct, not a warning.
-- [ ] If you run `setup-gcp`, delete the generated key immediately — server-side as well as
-      on disk (commands above).
-- [ ] Confirm `setup-gcp` is idempotent — run it twice against a project that already has
-      these resources and confirm no duplicates or errors. Separately, verify the *fresh-create*
-      path against a genuinely empty project — this is easy to skip if every project you test
-      against already hosts an agent.
+- [ ] Expect both shared buckets reported as existing when targeting a project where
+      `geg-core-infra` has applied them.
+- [ ] Confirm no bucket, service account or key is created, and that a second run changes
+      nothing.
+- [ ] Against a project **without** the buckets, confirm it names each missing one, points at
+      `geg-core-infra`, exits non-zero and creates nothing.
+- [ ] Without the `github-oidc` pool it prints a warning and carries on.
 
 ### Deploy
 
@@ -441,17 +461,18 @@ make setup-gcp ENV=dev
 make deploy-dev
 ```
 
-- [ ] Watch it: `vertexai.init` → pickles `root_agent` → creates the Agent Engine resource →
-      runs its own smoke test (`deployment/scripts/health_check.py`) → writes
-      `.agent_engine_resource`
-- [ ] Confirm `AGENT_ENGINE_RESOURCE_NAME=...` is printed at the end — that is what
-      `deploy.yml` captures
+- [ ] Watch it: `tofu apply` creates the engine and its grants and prints `agent_principal`
+      → `deploy.py` pickles `root_agent` and updates that engine, logging `Python: 3.1x`
+      → `health_check.py` retries the smoke test while the new grants propagate
+- [ ] Confirm the build log in Cloud Build shows this project's Python version, not 3.10
+- [ ] Run `make deploy-dev` a second time and confirm OpenTofu plans no changes and the same
+      engine is updated, not a second one created
 - [ ] Confirm the artifacts landed under this agent's own subfolder,
       `gs://$ADK_TEST_PROJECT-agent-staging/deploy-test-agent/`, and left any sibling's
       subfolder untouched
 
 ```bash
-echo "AGENT_ENGINE_RESOURCE_NAME=$(cat .agent_engine_resource)" >> .env
+export AGENT_ENGINE_RESOURCE_NAME="$(tofu -chdir=infra/agent output -raw agent_resource_name)"
 make health-check      # standalone, no fresh deploy; expect exit 0
 make logs
 make traces
@@ -489,20 +510,15 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 
 ### Teardown — per-agent only
 
-**The shared service account and staging bucket must survive.** Deleting either breaks every
-other agent in the project. Deleting the shared SA or bucket during teardown is a documented
-past mistake — don't repeat it.
+**The shared staging bucket, state bucket and Workload Identity pool must survive.** Deleting
+any of them breaks every other agent in the project. Deleting a shared resource during
+teardown is a documented past mistake — don't repeat it.
 
 ```bash
-# 1. this agent's Agent Engine resource (the billable one).
-#    gcloud has no `ai reasoning-engines` command in some CLI versions — use the SDK.
-uv run python -c "
-import vertexai
-from vertexai import agent_engines
-vertexai.init(project='$ADK_TEST_PROJECT', location='europe-west1')
-agent_engines.delete('$(cat .agent_engine_resource)', force=True)
-print('deleted')
-"
+# 1. this agent's engine (the billable one) and every grant to its identity and its CI.
+make infra-init ENV=dev
+make -n infra-apply ENV=dev          # prints the -var flags
+tofu -chdir=infra/agent destroy <those -var flags>
 
 # 2. only this agent's staging subfolder
 gsutil -m rm -r "gs://$ADK_TEST_PROJECT-agent-staging/deploy-test-agent/"
@@ -510,10 +526,10 @@ gsutil -m rm -r "gs://$ADK_TEST_PROJECT-agent-staging/deploy-test-agent/"
 # 3. this agent's dashboard and two alert policies, by display name (Console or gcloud)
 ```
 
-- [ ] Do **not** run `gcloud iam service-accounts delete agent-engine-sa@...`
+- [ ] Do **not** delete the state bucket or the Workload Identity pool
 - [ ] Do **not** run `gsutil rm -r` against the bucket root
 - [ ] Confirm any sibling agent's subfolder is still present afterwards
-- [ ] Don't leave a `.env` with real values, or any SA key, behind in `/tmp/agent-deploy`
+- [ ] Don't leave a `.env` with real values behind in `/tmp/agent-deploy`
 
 If instead you used a genuinely throwaway project, `gcloud projects delete <project>` removes
 everything in one step and is the safer teardown — nothing shared, nothing to preserve.
