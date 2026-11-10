@@ -133,7 +133,7 @@ gh repo create adk-template-ci-check --private --source=. --push
 
 # generated-project CI — use cruft, not cookiecutter (see below)
 cd /tmp && uv --directory /path/to/agent-deployment-template run \
-  cruft create https://github.com/philippschaedle/agent-deployment-template \
+  cruft create https://github.com/GEG-ETHZ/agent-deployment-template \
   --no-input -y --extra-context '{"project_name":"Ci Check Agent"}'
 ```
 
@@ -421,7 +421,7 @@ Generate via `cruft` — the documented flow — so `.cruft.json` is realistic:
 export ADK_TEST_PROJECT=example-gcp-project # or a fresh throwaway project
 mkdir -p /tmp/agent-deploy && cd /tmp/agent-deploy
 uv --directory /path/to/agent-deployment-template run \
-  cruft create https://github.com/philippschaedle/agent-deployment-template \
+  cruft create https://github.com/GEG-ETHZ/agent-deployment-template \
   --no-input -y --extra-context "{\"project_name\":\"Deploy Test Agent\",\"gcp_project_id\":\"$ADK_TEST_PROJECT\"}"
 # uv --directory sets the cwd, so the project lands in the template repo:
 mv /path/to/agent-deployment-template/deploy-test-agent /tmp/agent-deploy/
