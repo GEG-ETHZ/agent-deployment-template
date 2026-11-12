@@ -32,7 +32,7 @@ exit 0
 """
 
 
-def _run_setup(tmp_path: Path, existing_buckets: list[str]):
+def _run_setup(tmp_path: Path, existing_buckets: list[str], environment: str = "dev"):
     """Run the script with a fake gcloud; return the process and the gcloud calls."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -51,7 +51,7 @@ def _run_setup(tmp_path: Path, existing_buckets: list[str]):
     env.pop("GCS_STAGING_BUCKET", None)
     env.pop("STATE_BUCKET", None)
     result = subprocess.run(
-        ["bash", str(SCRIPT), "dev"],
+        ["bash", str(SCRIPT), environment],
         env=env,
         capture_output=True,
         text=True,
@@ -77,6 +77,26 @@ def test_never_creates_or_changes_a_bucket(tmp_path):
     assert not any(
         "buckets create" in call or "buckets update" in call for call in calls
     )
+
+
+def test_dev_names_the_eval_environment_without_reviewers(tmp_path):
+    # Arrange / Act
+    result, _ = _run_setup(tmp_path, [STAGING, STATE])
+
+    # Assert: a reviewer or a main-only branch rule would block every pull request's eval
+    output = result.stdout
+    assert "environment named 'eval'" in output
+    assert "NO required reviewers and NO deployment-branch rule" in output
+
+
+def test_prod_also_names_the_eval_environment_and_how_to_grant_it(tmp_path):
+    # Arrange / Act: a project without dev learns about the eval from its prod setup
+    result, _ = _run_setup(tmp_path, [STAGING, STATE], environment="prod")
+
+    # Assert
+    output = result.stdout
+    assert "environment named 'eval'" in output
+    assert "EVAL_STATE_ENV=prod in .env" in output
 
 
 def _missing_lines(output: str) -> list[str]:

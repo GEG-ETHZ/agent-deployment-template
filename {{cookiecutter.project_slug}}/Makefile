@@ -1,4 +1,4 @@
-.PHONY: install dev lint format typecheck test test-unit test-integration eval \
+.PHONY: install dev lint format typecheck test test-unit test-integration eval eval-check \
         deploy-dev deploy-prod rollback health-check logs traces setup-gcp setup-monitoring \
         deploy-code infra-init infra-apply infra-import infra-test pre-commit clean help
 
@@ -18,13 +18,18 @@ STAGING_BUCKET = $(patsubst gs://%,%,$(or $(GCS_STAGING_BUCKET),$(GOOGLE_CLOUD_P
 # where GitHub Actions sets GITHUB_REPOSITORY itself. Empty gives CI no access and needs no
 # Workload Identity pool: `make deploy-dev GITHUB_REPOSITORY=`.
 GITHUB_REPOSITORY := {{cookiecutter.github_org}}/{{cookiecutter.project_slug}}
+# The one state that grants the pull-request eval (infra/agent/eval.tf) its model calls.
+# For a project without a dev environment, set EVAL_STATE_ENV=prod in .env, not once on the
+# command line: every apply of the prod state without it would delete the eval's grants.
+EVAL_STATE_ENV ?= dev
 TOFU_VARS = -var="project_id=$(GOOGLE_CLOUD_PROJECT)" \
 	-var="region=$(GOOGLE_CLOUD_LOCATION)" \
 	-var="agent_slug=$(AGENT_SLUG)" \
 	-var="staging_bucket=$(STAGING_BUCKET)" \
 	-var="state_bucket=$(STATE_BUCKET)" \
 	-var="github_repository=$(GITHUB_REPOSITORY)" \
-	-var="environment=$(ENV)"
+	-var="environment=$(ENV)" \
+	-var="eval_state_env=$(EVAL_STATE_ENV)"
 # The engine of the environment infra-init last selected, read from the OpenTofu state.
 ENGINE_NAME = $$(tofu -chdir=$(INFRA_DIR) output -raw agent_resource_name)
 
@@ -40,7 +45,8 @@ help:
 	@echo "  test              Run all tests with coverage (unit + integration)"
 	@echo "  test-unit         Run unit tests only"
 	@echo "  test-integration  Run integration tests (mocked LLM, no API keys needed)"
-	@echo "  eval              Run promptfoo skill evaluations"
+	@echo "  eval              Run promptfoo skill evaluations (real model calls, billed; needs ADC)"
+	@echo "  eval-check        Check the eval config and datasets, no key or model call"
 	@echo "  deploy-dev   Apply infra/agent (engine, identity, roles), ship the code, health-check"
 	@echo "  deploy-prod  Same, for prod"
 	@echo "  deploy-code  Ship the code to the existing engine, no apply (what CI runs): ENV=dev|prod"
@@ -81,8 +87,15 @@ test-unit:
 test-integration:
 	uv run pytest tests/integration -v --tb=short
 
+# Calls real models, billed to GOOGLE_CLOUD_PROJECT: the agent once or more per case, the
+# grader once per llm-rubric assertion, on Vertex AI with Application Default Credentials.
 eval:
 	uv run python tests/evals/run_eval.py
+
+# No key, no login, no model call: checks promptfoo.yaml, the datasets and the settings
+# check. Also part of `make test`.
+eval-check:
+	uv run pytest tests/unit/test_eval_suite.py tests/unit/test_eval_enforce.py -q --no-cov
 
 # Apply first: OpenTofu creates the engine, which gives the agent its identity, and grants
 # that identity its roles before any code runs. deploy-code then ships the code to it.

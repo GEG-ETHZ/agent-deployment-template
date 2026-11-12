@@ -15,8 +15,32 @@ jobs:
   promptfoo:
     name: Prompt Security Evaluation
     runs-on: ubuntu-latest
+    # The eval runs the agent here and grades it with a second model, both on Vertex AI,
+    # so it logs in through Workload Identity Federation, like deploy.yml, with no key. It
+    # logs in as the GitHub environment `eval`: its principal may only call models
+    # (infra/agent/eval.tf). Not as `prod` or `dev`, whose reviewers would block every
+    # pull request. `eval` has no required reviewers and no branch rule.
+    environment: eval
+    permissions:
+      contents: read
+      # Lets google-github-actions/auth request GitHub's OIDC token for WIF.
+      id-token: write
+    env:
+      # The `eval` environment's variables: the project the eval's model calls run in and
+      # are billed to (dev's, by default), and its region.
+      GOOGLE_CLOUD_PROJECT: "{% raw %}${{ vars.GOOGLE_CLOUD_PROJECT }}{% endraw %}"
+      GOOGLE_CLOUD_LOCATION: "{% raw %}${{ vars.GOOGLE_CLOUD_LOCATION }}{% endraw %}"
     steps:
       - uses: actions/checkout@v4
+
+      # Keyless: the run's OIDC token is exchanged in the Workload Identity pool, and the
+      # APIs see this repository in the `eval` environment as the caller. The agent and
+      # the rubric grader both pick it up as Application Default Credentials.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "{% raw %}${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}{% endraw %}"
+          project_id: "{% raw %}${{ vars.GOOGLE_CLOUD_PROJECT }}{% endraw %}"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -37,10 +61,13 @@ jobs:
 
       - name: Run promptfoo evaluation
         # --ci isn't a recognized promptfoo eval flag (checked against current --help).
-        # -o writes the output.json the next two steps read/upload. Deliberately not
-        # relying on this step's own exit code — verified empirically that promptfoo exits
-        # 0 even when every test case errors out (e.g. a bad API key), so pass/fail is
-        # enforced explicitly in "Enforce evaluation results" below instead.
+        # -o writes the output.json the next two steps read/upload. Pass/fail is decided
+        # by "Enforce evaluation results" below, not by this step's exit code: promptfoo
+        # exits 0 when cases error out, and 100 as soon as one case fails -- a grader
+        # that could not log in included. With 100 this step failed and the Enforce step
+        # was skipped, so the threshold and the "could not be graded" report never ran.
+        # PROMPTFOO_FAILED_TEST_EXIT_CODE=0 below turns that off; promptfoo still exits
+        # non-zero when it cannot run at all, and then there is no output.json.
         # `uv run` matters here: promptfoo's python:provider.py provider spawns its own
         # Python worker to import tests/evals/provider.py, which needs this project's
         # deps (python-dotenv, google-adk, ...) from .venv. Without `uv run`, that worker
@@ -55,6 +82,7 @@ jobs:
         run: uv run npx --yes promptfoo@0.123.1 eval --config tests/evals/promptfoo.yaml --no-progress-bar -j 2 -o output.json
         env:
           PROMPTFOO_DISABLE_TELEMETRY: "1"
+          PROMPTFOO_FAILED_TEST_EXIT_CODE: "0"
           # The ADK's OpenTelemetry instrumentation detaches a context token from a
           # different context than the one it was created in when driven from
           # promptfoo's async python worker, which raises
@@ -64,43 +92,17 @@ jobs:
           # flaky here and nowhere else.
           OTEL_SDK_DISABLED: "true"
           MODEL_PROVIDER: google
-          GOOGLE_API_KEY: "{% raw %}${{ secrets.GOOGLE_API_KEY }}{% endraw %}"
+          # Gemini through Vertex AI and the credentials above. Without it google-genai
+          # uses the AI Studio backend, which needs an API key. No API key is set here on
+          # purpose: promptfoo's vertex: grader would send it to Vertex, which refuses it.
+          GOOGLE_GENAI_USE_VERTEXAI: "TRUE"
 
       - name: Enforce evaluation results
         # promptfoo's own exit code doesn't reflect errors (only, maybe, assertion
-        # failures) — read output.json directly and fail on any error or a pass rate below
-        # promptfoo.yaml's threshold, since neither is safe to treat as a passing eval.
-        run: |
-          uv run python3 - <<'EOF'
-          import json
-          import sys
-
-          import yaml
-
-          with open("tests/evals/promptfoo.yaml") as f:
-              threshold = yaml.safe_load(f).get("threshold", 1.0)
-
-          with open("output.json") as f:
-              stats = json.load(f)["results"]["stats"]
-
-          successes = stats["successes"]
-          failures = stats["failures"]
-          errors = stats["errors"]
-          total = successes + failures + errors
-          pass_rate = successes / total if total else 0.0
-
-          print(
-              f"successes={successes} failures={failures} errors={errors} "
-              f"pass_rate={pass_rate:.2%} threshold={threshold:.0%}"
-          )
-
-          if errors:
-              print(f"::error::{errors} test case(s) errored (could not complete) — treated as failing.")
-              sys.exit(1)
-          if pass_rate < threshold:
-              print(f"::error::Pass rate {pass_rate:.2%} is below the required threshold {threshold:.0%}.")
-              sys.exit(1)
-          EOF
+        # failures). enforce.py reads output.json and fails on a grader that could not
+        # run (reported as such, not as an agent failure), on any errored case, and on a
+        # pass rate below promptfoo.yaml's threshold. `make eval` runs the same check.
+        run: uv run python tests/evals/enforce.py output.json
 
       - name: Upload results
         if: always()

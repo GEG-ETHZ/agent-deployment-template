@@ -105,7 +105,8 @@ make dev                  # run at http://localhost:8000
 
 ```bash
 make test                 # unit tests with coverage
-make eval                 # promptfoo red-team evaluation
+make eval-check           # check the eval suite: no key, no model call
+make eval                 # promptfoo red-team evaluation: real model calls, billed; needs ADC
 ```
 
 ### Deploy to GCP
@@ -140,7 +141,8 @@ exactly what to configure and where `setup-gcp`'s output goes.
 | `make dev` | Run agent locally at http://localhost:8000 |
 | `make test` | Unit tests with coverage |
 | `make test-integration` | Integration tests only |
-| `make eval` | Prompt security evaluation (promptfoo) |
+| `make eval` | Prompt security evaluation (promptfoo): real model calls billed to `GOOGLE_CLOUD_PROJECT`, needs `gcloud auth application-default login` |
+| `make eval-check` | Check the eval config and datasets without a key or a model call |
 | `make lint` | Ruff lint check |
 | `make format` | Ruff formatter |
 | `make typecheck` | Pyright |
@@ -173,7 +175,7 @@ exactly what to configure and where `setup-gcp`'s output goes.
 | `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` | No | Set to `true` on deploy: Agent Engine's built-in tracing |
 | `CLOUD_TRACE_ENABLED` | No | Our own span exporter, local runs only (it fails under Agent Identity) |
 | `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID` | With `CLOUD_TRACE_ENABLED` | Project our exporter writes to |
-| `GOOGLE_API_KEY` | Local dev | Not needed on GCP (uses ADC) |
+| `GOOGLE_API_KEY` | No | Only when `GOOGLE_GENAI_USE_VERTEXAI` is not `TRUE`. Not needed on GCP (uses ADC), and never by the eval's grader, which always uses ADC |
 | `ANTHROPIC_API_KEY` | If provider=anthropic | |
 | `OPENAI_API_KEY` | If provider=openai | |
 | `SERPAPI_API_KEY` | No | Enables live web search; omit for stub |

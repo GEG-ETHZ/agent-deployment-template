@@ -105,6 +105,11 @@ run "no_ci_grants_without_a_github_repository" {
     condition     = output.ci_principal == null
     error_message = "ci_principal must be null without a GitHub repository."
   }
+
+  assert {
+    condition     = length(google_project_iam_custom_role.eval) + length(google_project_iam_member.eval_predict) + length(google_project_iam_member.eval_billing) == 0 && output.eval_principal == null
+    error_message = "Eval grants exist although no GitHub repository is configured."
+  }
 }
 
 # A grant on the repository alone would match a workflow on any branch, with or without an
@@ -264,4 +269,129 @@ run "state_bucket_with_a_quote_is_refused" {
   }
 
   expect_failures = [var.state_bucket]
+}
+
+# The pull-request eval logs in as its own GitHub environment, `eval`: not prod, whose
+# reviewers would block every pull request, and not the repository alone, which matches
+# every workflow of every branch.
+run "eval_principal_is_the_eval_environment" {
+  command = apply
+
+  variables {
+    github_repository = "example-org/test-repo"
+  }
+
+  assert {
+    condition     = output.eval_principal == "principalSet://iam.googleapis.com/projects/111111111111/locations/global/workloadIdentityPools/github-oidc/attribute.repository_environment/example-org/test-repo:eval"
+    error_message = "eval_principal is not the repository in the eval environment, in the github-oidc pool."
+  }
+
+  assert {
+    condition     = output.eval_principal != output.ci_principal
+    error_message = "The eval must not share the deploy principal."
+  }
+}
+
+# Any branch can run the eval, so it may call models and nothing else.
+run "eval_may_only_call_models" {
+  command = apply
+
+  variables {
+    github_repository = "example-org/test-repo"
+  }
+
+  assert {
+    condition     = google_project_iam_custom_role.eval[0].permissions == toset(["aiplatform.endpoints.predict"]) && google_project_iam_custom_role.eval[0].project == "test-project"
+    error_message = "The eval role must hold aiplatform.endpoints.predict only."
+  }
+
+  # Role IDs allow no hyphens; the hash keeps `test-agent` and `test_agent` apart.
+  assert {
+    condition     = google_project_iam_custom_role.eval[0].role_id == "agentEval_test_agent_b8af647b"
+    error_message = "The eval role ID must be agentEval_, the slug with underscores, and the slug's hash."
+  }
+
+  assert {
+    condition     = google_project_iam_member.eval_predict[0].role == google_project_iam_custom_role.eval[0].name && google_project_iam_member.eval_predict[0].member == output.eval_principal
+    error_message = "The eval principal must hold the eval role."
+  }
+
+  assert {
+    condition     = google_project_iam_member.eval_billing[0].role == "roles/serviceusage.serviceUsageConsumer" && google_project_iam_member.eval_billing[0].member == output.eval_principal
+    error_message = "The eval must be allowed to bill its model calls to the project."
+  }
+}
+
+run "eval_principal_has_no_rights_on_the_engine_or_the_buckets" {
+  command = apply
+
+  variables {
+    github_repository = "example-org/test-repo"
+  }
+
+  assert {
+    condition     = !contains([google_vertex_ai_reasoning_engine_iam_member.ci[0].member, google_storage_bucket_iam_member.ci_staging[0].member, google_storage_bucket_iam_member.ci_staging_bucket[0].member, google_storage_bucket_iam_member.ci_state[0].member], output.eval_principal)
+    error_message = "The eval principal must hold nothing on the engine or the staging and state buckets."
+  }
+}
+
+# The dev and prod states are applied separately; only one may own the eval role.
+run "prod_state_grants_the_eval_nothing_by_default" {
+  command = plan
+
+  variables {
+    github_repository = "example-org/test-repo"
+    environment       = "prod"
+  }
+
+  assert {
+    condition     = length(google_project_iam_custom_role.eval) + length(google_project_iam_member.eval_predict) + length(google_project_iam_member.eval_billing) == 0
+    error_message = "The prod state must not grant the eval while eval_state_env is dev."
+  }
+}
+
+run "eval_can_move_to_the_prod_state" {
+  command = apply
+
+  variables {
+    github_repository = "example-org/test-repo"
+    environment       = "prod"
+    eval_state_env    = "prod"
+  }
+
+  assert {
+    condition     = length(google_project_iam_member.eval_predict) == 1 && endswith(output.eval_principal, ":eval")
+    error_message = "With eval_state_env = prod, the prod state must grant the eval."
+  }
+}
+
+run "eval_state_env_must_be_dev_or_prod" {
+  command = plan
+
+  variables {
+    eval_state_env = "staging"
+  }
+
+  expect_failures = [var.eval_state_env]
+}
+
+# The longest slugs still give a valid role ID: at most 64 characters, and two slugs that
+# share their first 45 characters still differ.
+run "eval_role_id_fits_for_a_long_slug" {
+  command = plan
+
+  variables {
+    github_repository = "example-org/test-repo"
+    agent_slug        = "a-very-long-agent-name-that-goes-on-and-on-and-on-for-ever-1"
+  }
+
+  assert {
+    condition     = length(google_project_iam_custom_role.eval[0].role_id) <= 64 && can(regex("^[a-zA-Z0-9_.]+$", google_project_iam_custom_role.eval[0].role_id))
+    error_message = "The eval role ID must be at most 64 letters, digits, `_` or `.`."
+  }
+
+  assert {
+    condition     = google_project_iam_custom_role.eval[0].role_id != "agentEval_${substr("a_very_long_agent_name_that_goes_on_and_on_and_on_for_ever_2", 0, 45)}_${substr(sha1("a-very-long-agent-name-that-goes-on-and-on-and-on-for-ever-2"), 0, 8)}"
+    error_message = "Two long slugs with one prefix must not share a role ID."
+  }
 }

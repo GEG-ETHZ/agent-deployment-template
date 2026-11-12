@@ -64,7 +64,37 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   ships the code with `make deploy-code`.
 - `validate-template.yml` and `make validate` run the generated project's OpenTofu checks.
 
+### Fixed
+
+- **The pull-request eval can log in, and a grader that cannot is no longer read as a worse
+  agent** (#1). promptfoo's `vertex:` grader sent `GOOGLE_API_KEY` to Vertex whenever it was
+  set, which Vertex refuses, so every `llm-rubric` case failed ungraded. The grader now sets
+  `expressMode: false` and always uses Application Default Credentials. `eval.yml` logs in
+  through Workload Identity Federation as a new GitHub environment `eval`, with
+  `GOOGLE_GENAI_USE_VERTEXAI=TRUE` and no API key; `infra/agent/eval.tf` grants that principal
+  a per-agent custom role with only `aiplatform.endpoints.predict`, plus
+  `serviceUsageConsumer`, in the `dev` state only (`EVAL_STATE_ENV=prod` in `.env` moves it).
+  It holds nothing on the engine or the buckets. `tests/evals/enforce.py` replaces the
+  workflow's inline check. Cases with `graderError` still count against the threshold, so one
+  grader quota error is absorbed like any flaky case, but they are reported first, as "could
+  not be graded", instead of as agent failures. promptfoo's exit code 100 on a failed case no longer fails the run step first,
+  which had skipped that check. `make eval` runs the same check and the same pinned promptfoo
+  as CI.
+- **`make eval` says what it needs and costs** (#9). It checks its settings before the first
+  model call and stops naming what is missing; the docs state the credentials and the calls a
+  run makes. `make eval-check`, also part of `make test`, validates `promptfoo.yaml` and every
+  dataset line without a key or a model call. An unknown or empty `MODEL_PROVIDER` is caught
+  there too; `deployment/config.py` now holds the one list of providers.
+
 ### Upgrading an existing project
+
+For the eval fix alone (#1): after `cruft update`, create the GitHub environment `eval` with no
+required reviewers and no deployment-branch rule, give it dev's `GOOGLE_CLOUD_PROJECT`,
+`GOOGLE_CLOUD_LOCATION` and `GCP_WORKLOAD_IDENTITY_PROVIDER`, run `make infra-apply ENV=dev`,
+and delete the repository secret `GOOGLE_API_KEY`. Until then the eval fails at its login
+step. The applier needs the right to create custom roles (`roles/iam.roleAdmin` or owner).
+
+For the Agent Identity change:
 
 The engine is re-created, so the agent gets a new resource ID and a new identity. Prerequisites
 in the GCP project: a Workload Identity pool `github-oidc` with a provider `github` that maps

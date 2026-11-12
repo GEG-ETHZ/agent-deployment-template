@@ -8,6 +8,11 @@ output "ci_principal" {
   value       = local.ci_principal
 }
 
+output "eval_principal" {
+  description = "The WIF principal eval.yml runs as: the GitHub repository in the `eval` environment; null without github_repository or outside eval_state_env."
+  value       = local.eval_principal
+}
+
 output "agent_principal" {
   description = "IAM principal of the deployed agent; grant it any further access here."
   value       = local.agent_principal
