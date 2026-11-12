@@ -524,6 +524,17 @@ runtime drives internally and which our code never touches in production:
 - **`@instrument`** — wraps a tool function (sync or async) and logs `<name>.start`,
   `<name>.end` (with `duration_ms`), or `<name>.error` (with the exception message) as JSON.
   Already applied to both tools in `agent/tools/example_tools.py`.
+  **A tool that returns an error instead of raising is still logged as failed.** Tools should
+  return errors to the model rather than raise, so the model can explain them and the turn
+  does not fail. `@instrument` recognises three error shapes and logs `<name>.end` with
+  `outcome: "error"`, the error text and `severity: ERROR` (and marks the span failed),
+  while returning the result unchanged:
+  - a string starting with `ERROR` (for example `"ERROR: table not found"`);
+  - a dict with a truthy `error` key, or ADK's convention
+    `{"status": "error", "error_message": "..."}`;
+  - an object, such as a Pydantic response model, with a truthy `error` attribute.
+
+  Return errors in one of these shapes; any other result counts as a success.
 - **`log_event(event_type, fields, severity="INFO")`** — emit one structured JSON line for
   anything else worth recording. `CloudLoggingHandler` parses that JSON line into a
   `jsonPayload`, and the Python log level (chosen from `severity`) sets the LogEntry's own
@@ -586,8 +597,8 @@ Every event is one JSON object with these keys (exact set depends on which funct
 | `agent_name` | all | Always `root_agent`, in every project generated from this template — so it does **not** identify one agent in a shared project. `read_logs.sh` scopes by `reasoning_engine_id` instead |
 | `event` | all | Event name: `<tool>.start` / `.end` / `.error`, or `model.usage` |
 | `duration_ms` | `@instrument` | Wall-clock time for the call |
-| `outcome` | `@instrument` (`.end`) | Always `success` — failures are a separate `.error` event instead |
-| `error` | `@instrument` (`.error`) | `str(exception)` |
+| `outcome` | `@instrument` (`.end`) | `success`, or `error` when the tool returned an error-shaped result (see `@instrument` above). A raised exception is a separate `.error` event instead |
+| `error` | `@instrument` (`.error`, and `.end` with `outcome: error`) | `str(exception)`, or the returned error text (at most 500 characters) |
 | `args`, `kwargs` | `@instrument` (`.start`) | The call's arguments, PII-redacted |
 | `prompt_tokens`, `candidates_tokens`, `total_tokens` | `log_model_usage` | From the ADK event's `usage_metadata` |
 

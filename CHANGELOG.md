@@ -52,6 +52,12 @@ MAJOR/MINOR/PATCH and how releases are tagged.
 - `make infra-apply`, `make infra-import`, `make infra-test` and `make deploy-code` in
   generated projects; `ci.yml` runs `make infra-test`, offline against a mocked provider.
 - The health check retries while new IAM grants propagate (`--attempts`).
+- `@instrument` logs a tool that returns an error instead of raising as failed: `<name>.end`
+  with `outcome: "error"`, the error text and `severity: ERROR`, and a failed span. It
+  recognises a string starting with `ERROR`, a dict with a truthy `error` key or
+  `status: "error"` (ADK's convention), and an object with a truthy `error` attribute.
+  Before, every such call was logged as `outcome: success`. Log queries that treat every
+  `.end` event as a success need the `outcome` field now.
 - `setup_gcp.sh` checks that the shared staging and state buckets exist, stopping and naming
   each missing one; it creates none.
 - CI's staging access is limited to the agent's own folder `<project_slug>/`, and its names

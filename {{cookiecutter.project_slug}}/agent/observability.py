@@ -129,6 +129,52 @@ def _record_span_error(span: Any, exc: Exception) -> None:
         _warn(f"could not record exception on span: {span_exc}")
 
 
+def _set_span_error_status(span: Any, message: str) -> None:
+    """Mark a span as failed without an exception, for a tool that returned an error."""
+    if span is None:
+        return
+    try:
+        from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+
+        span.set_status(Status(StatusCode.ERROR, message))
+    except Exception as span_exc:
+        _warn(f"could not set error status on span: {span_exc}")
+
+
+# Longest error text an error-shaped result contributes to a log line or span status.
+_MAX_ERROR_TEXT = 500
+
+
+def _result_error(result: Any) -> str | None:
+    """The error text of an error-shaped tool result, or None for a normal result.
+
+    Tools return errors to the model instead of raising, so the model can explain them
+    and the turn does not fail. Without this, such a call would be logged as a success.
+    Recognised shapes:
+
+    - a string starting with "ERROR" (e.g. "ERROR: table not found");
+    - a dict with a truthy "error" key, or with "status" == "error" (ADK's documented
+      tool convention, with the text in "error_message");
+    - any other object with a truthy `error` attribute (e.g. a Pydantic response model).
+    """
+    error: Any = None
+    if isinstance(result, str):
+        if result.startswith("ERROR"):
+            error = result
+    elif isinstance(result, dict):
+        if result.get("error"):
+            error = result["error"]
+        elif result.get("status") == "error":
+            error = result.get("error_message") or "status: error"
+    elif not isinstance(result, (list, tuple, set, bytes, int, float, bool)):
+        attribute = getattr(result, "error", None)
+        if attribute and not callable(attribute):
+            error = attribute
+    if not error:
+        return None
+    return str(error)[:_MAX_ERROR_TEXT]
+
+
 def _set_span_attribute(span: Any, key: str, value: Any) -> None:
     """Set one span attribute, best-effort, for the same reason as `_record_span_error`."""
     if span is None:
@@ -208,7 +254,9 @@ def instrument(func: F) -> F:
 
     Works on sync or async callables. Emits `<name>.start` / `.end` / `.error` log
     events and, when tracing is configured, wraps the call in a Cloud Trace span
-    named after the function. `functools.wraps` keeps the wrapped function's name,
+    named after the function. A raised exception gives `.error`; a returned
+    error-shaped result (see `_result_error`) gives `.end` with `outcome: "error"` at
+    ERROR severity and is returned unchanged. `functools.wraps` keeps the wrapped function's name,
     docstring, and signature intact via `__wrapped__`, so ADK's tool-schema
     introspection sees the original function unchanged.
     """
@@ -217,13 +265,24 @@ def instrument(func: F) -> F:
         log_event(f"{func.__name__}.start", {"args": args, "kwargs": kwargs})
         return time.perf_counter()
 
-    def _end(start: float, span: Any) -> None:
+    def _end(start: float, span: Any, result: Any) -> None:
         duration_ms = (time.perf_counter() - start) * 1000
-        _set_span_attribute(span, "outcome", "success")
         _set_span_attribute(span, "duration_ms", round(duration_ms, 2))
+        error = _result_error(result)
+        if error is None:
+            _set_span_attribute(span, "outcome", "success")
+            log_event(
+                f"{func.__name__}.end",
+                {"duration_ms": round(duration_ms, 2), "outcome": "success"},
+            )
+            return
+        # The tool returned an error instead of raising: still a failed call.
+        _set_span_attribute(span, "outcome", "error")
+        _set_span_error_status(span, error)
         log_event(
             f"{func.__name__}.end",
-            {"duration_ms": round(duration_ms, 2), "outcome": "success"},
+            {"duration_ms": round(duration_ms, 2), "outcome": "error", "error": error},
+            severity="ERROR",
         )
 
     def _error(start: float, exc: Exception, span: Any) -> None:
@@ -248,7 +307,7 @@ def instrument(func: F) -> F:
                 except Exception as exc:
                     _error(start, exc, span)
                     raise
-                _end(start, span)
+                _end(start, span, result)
                 return result
 
         return _async_wrapper  # type: ignore[return-value]
@@ -262,7 +321,7 @@ def instrument(func: F) -> F:
             except Exception as exc:
                 _error(start, exc, span)
                 raise
-            _end(start, span)
+            _end(start, span, result)
             return result
 
     return _sync_wrapper  # type: ignore[return-value]
