@@ -80,7 +80,8 @@ cd your-agent-name
 
 # 3. Configure environment
 cp .env.example .env
-# Edit .env — fill in GOOGLE_CLOUD_PROJECT and GOOGLE_API_KEY at minimum
+# Edit .env — fill in GOOGLE_CLOUD_PROJECT at minimum, then run
+# `gcloud auth application-default login` (Gemini on Vertex AI; no API key needed)
 
 # 4. Run locally
 make dev   # → http://localhost:8000

@@ -58,7 +58,8 @@ OpenTofu grants the agent's identity its roles.
 | `make test` | Unit tests with coverage |
 | `make test-unit` | Unit tests only, verbose |
 | `make test-integration` | Integration tests only |
-| `make eval` | promptfoo red-team evaluation |
+| `make eval` | promptfoo red-team evaluation: real model calls, billed (see [Running the eval](#running-the-eval)) |
+| `make eval-check` | Check the eval config and datasets: no key, no model call |
 | `make lint` | ruff lint check |
 | `make format` | ruff format |
 | `make typecheck` | pyright |
@@ -375,7 +376,7 @@ Alert.
 | `ci.yml` | push + PR | lint, format, typecheck, OpenTofu fmt/validate/tests, unit tests, combined-suite coverage |
 | `lint-pr.yml` | PR opened/edited | PR title is a valid conventional commit |
 | `security.yml` | push to main + weekly | CodeQL, pip-audit CVEs, secret scan |
-| `eval.yml` | PR to main | promptfoo red-team (90% pass threshold) |
+| `eval.yml` | PR to main | promptfoo red-team (95% pass threshold), logged in through Workload Identity Federation as the `eval` environment; a grader that could not log in is reported as such, not as an agent failure |
 | `deploy.yml` | `ci.yml` passing on main | logs in through Workload Identity Federation, then `make deploy-code ENV=prod`: reads the engine from the OpenTofu state, ships that commit's code, health-checks. It never applies |
 | `cruft-check.yml` | push + PR + weekly | non-blocking: warns if `cruft update` is available from the template |
 
@@ -394,7 +395,6 @@ which would make both environments deploy to the same place. None of them is a s
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | Variable | Per environment | `projects/<number>/locations/global/workloadIdentityPools/github-oidc/providers/github` |
 | `MODEL_PROVIDER` | Variable | Per environment | `google` \| `anthropic` \| `openai` \| `litellm` |
 | `GCS_STAGING_BUCKET` | Variable | Per environment | Optional — derived from the project id unless you renamed the bucket |
-| `GOOGLE_API_KEY` | Secret | Repository-level | Used only by `eval.yml` (promptfoo), not per-environment  <!-- pragma: allowlist secret --> |
 
 The engine name is not configured anywhere: `make deploy-code` reads it from the environment's
 OpenTofu state, as a local deploy does.
@@ -435,6 +435,57 @@ CI's access needs the `github-oidc` pool in the environment's project, which `ge
 creates; `setup_gcp.sh` warns when it is missing. To deploy without CI, set `GITHUB_REPOSITORY` in
 the `Makefile` to empty or run `make deploy-<env> GITHUB_REPOSITORY=`: no grants are made and no
 pool is looked up.
+
+### Running the eval
+
+`make eval` runs the agent over the promptfoo suite in `tests/evals/` and grades the answers,
+both with real model calls billed to `GOOGLE_CLOUD_PROJECT`: the agent once or more per case
+(Gemini 2.5 Pro by default), and the grader once per `llm-rubric` assertion (Gemini 2.5 Flash).
+Today that is 20 cases and 10 rubric assertions per run.
+
+| Needs | Why |
+|---|---|
+| `GOOGLE_CLOUD_PROJECT` and `gcloud auth application-default login` | The grader always runs on Vertex AI with Application Default Credentials, also when the agent uses an API key |
+| `GOOGLE_GENAI_USE_VERTEXAI=TRUE` (the `.env.example` default), or `GOOGLE_API_KEY` | The agent's own Gemini calls; other providers need their own key |
+| Node.js 22+ | promptfoo runs through `npx` |
+
+`make eval` checks these settings before it spends a call, and stops with what is missing. To
+check the suite itself without any of them, run `make eval-check`: it validates
+`promptfoo.yaml` and every dataset line, and runs as part of `make test` too.
+
+A run fails for one of three reasons, reported in this order by `tests/evals/enforce.py`: the
+grader could not run (credentials, permission or quota, so the agent was never judged), a case
+errored, or the pass rate is below the threshold in `promptfoo.yaml`.
+
+### The `eval` environment
+
+`eval.yml` runs on every pull request, so it cannot log in as `prod` (its reviewers would block
+every pull request) or as the repository alone (that matches any workflow on any branch). It
+logs in as a third GitHub Environment, `eval`, whose principal may only call models:
+
+| Grant | Scope | Why |
+|---|---|---|
+| custom role `agentEval_<agent>` with `aiplatform.endpoints.predict` | the project | the agent under test and the rubric grader call Gemini |
+| `roles/serviceusage.serviceUsageConsumer` | the project | bill those calls to the project; no data access |
+
+It holds nothing on the engine or on the staging and state buckets. `infra/agent/eval.tf` makes
+the grants, in the `dev` state only, so they are applied by `make infra-apply ENV=dev` and the
+eval runs and is billed in dev's project. A project with only `prod` applies it there instead:
+`make infra-apply ENV=prod EVAL_STATE_ENV=prod`.
+
+Create the environment once (Settings → Environments → New environment → `eval`), with **no
+required reviewers and no deployment-branch rule**: pull-request runs come from feature
+branches, and a rule limited to `main` would block every one. Give it these variables, the
+same values as `dev`'s:
+
+| Name | Kind | Description |
+|---|---|---|
+| `GOOGLE_CLOUD_PROJECT` | Variable | The project the eval's model calls run in: dev's |
+| `GOOGLE_CLOUD_LOCATION` | Variable | Vertex AI region |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Variable | The same provider as `dev`'s |
+
+Pull requests from forks get no OIDC token, so their eval cannot log in and fails at the
+login step.
 
 ### Claude Code slash commands
 
@@ -748,7 +799,8 @@ Run `cz bump` (via `uv run cz bump`) to cut a release and move unreleased entrie
 
 - [ ] `make pre-commit` passes — never `--no-verify`
 - [ ] `make test` passes, with combined-suite coverage at or above the configured floor
-- [ ] `make eval` reviewed if prompts, tools or safety behaviour changed
+- [ ] `make eval` reviewed if prompts, tools or safety behaviour changed (`make eval-check` if
+      only the eval suite changed)
 - [ ] `CHANGELOG.md` updated under `[Unreleased]`
 - [ ] PR title is a valid conventional commit
 - [ ] If deployed: `make health-check` passes, and `make logs` / `make traces` show the

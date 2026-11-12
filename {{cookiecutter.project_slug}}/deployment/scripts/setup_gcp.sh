@@ -104,6 +104,15 @@ echo "  GOOGLE_CLOUD_LOCATION          = $LOCATION"
 echo "  GCP_WORKLOAD_IDENTITY_PROVIDER = projects/$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')/locations/global/workloadIdentityPools/github-oidc/providers/github"
 echo "Then run 'make infra-apply ENV=$GH_ENVIRONMENT' to grant the repository its access."
 echo ""
+# The pull-request eval (eval.yml) logs in as its own environment, `eval`, granted model
+# calls only by the dev state (infra/agent/eval.tf), in dev's project.
+if [ "$GH_ENVIRONMENT" = "dev" ]; then
+  echo "The pull-request eval (eval.yml) logs in as a GitHub environment named 'eval'."
+  echo "Create it with NO required reviewers and NO deployment-branch rule (pull requests"
+  echo "run from feature branches), and give it the same three variables as above."
+  echo "'make infra-apply ENV=dev' grants it model calls in $PROJECT, and nothing else."
+  echo ""
+fi
 echo "Update your .env file with:"
 cat <<ENV
 GOOGLE_CLOUD_PROJECT=$PROJECT

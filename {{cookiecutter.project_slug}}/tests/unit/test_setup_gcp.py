@@ -79,6 +79,16 @@ def test_never_creates_or_changes_a_bucket(tmp_path):
     )
 
 
+def test_dev_names_the_eval_environment_without_reviewers(tmp_path):
+    # Arrange / Act
+    result, _ = _run_setup(tmp_path, [STAGING, STATE])
+
+    # Assert: a reviewer or a main-only branch rule would block every pull request's eval
+    output = result.stdout
+    assert "environment named 'eval'" in output
+    assert "NO required reviewers and NO deployment-branch rule" in output
+
+
 def _missing_lines(output: str) -> list[str]:
     return [
         line.strip()
