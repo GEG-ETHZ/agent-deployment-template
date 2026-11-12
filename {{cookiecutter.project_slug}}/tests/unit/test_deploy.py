@@ -201,7 +201,8 @@ def test_deploy_enables_observability_on_the_deployed_resource(deploy_env, deps)
     deploy("dev")
 
     assert update_kwargs(deps)["env_vars"] == {
-        "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true"
+        "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
+        "OTEL_SEMCONV_STABILITY_OPT_IN": "gen_ai_latest_experimental",
     }
 
 

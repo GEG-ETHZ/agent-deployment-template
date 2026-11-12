@@ -104,6 +104,7 @@ Set `MODEL_PROVIDER` in `.env`:
 | `AGENT_ENGINE_RESOURCE_NAME` | Standalone `health-check` / `deploy.py` only | — | Engine to query or update. `make deploy-*` and `make rollback` set it from the OpenTofu output, so it does not belong in `.env` |
 | `STATE_BUCKET` | No | `$GOOGLE_CLOUD_PROJECT-agents-state` | OpenTofu state bucket shared by every agent of the project |
 | `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` | No | — | `deploy.py` sets `true` on the deployed agent: Agent Engine's built-in tracing |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | No | — | `deploy.py` sets `gen_ai_latest_experimental` on the deployed agent: what the Agent Engine console's dashboard reads |
 | `CLOUD_TRACE_ENABLED` | No | off | Our own span exporter, for local runs only — it fails under Agent Identity (see Observability) |
 | `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID` | With `CLOUD_TRACE_ENABLED` | — | Project our span exporter writes to |
 | `MODEL_PROVIDER` | No | `google` | Provider selection |
@@ -545,14 +546,17 @@ agent by `reasoning_engine_id` — the log names are shared by every reasoning e
 project.
 
 **Traces of the deployed agent come from Agent Engine's built-in telemetry.**
-`deployment/deploy.py` sets one variable on the deployed resource:
+`deployment/deploy.py` sets two variables on the deployed resource, as Google's tracing setup
+for an `AdkApp` does:
 
 | Variable | Effect |
 |---|---|
 | `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` | `true`: the platform traces each request — model calls and tool calls under ADK's root span — into Cloud Trace. `make traces` lists roots only; use `read_traces.py --spans` to expand them. Without it the SDK sends `unspecified`, which an engine OpenTofu created resolves to disabled |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | `gen_ai_latest_experimental`: spans use the latest GenAI semantic conventions, which the Agent Engine console's dashboard and observability view read. Without it an agent deployed through the API gets traces in Cloud Trace but an empty console view |
 
 Prompt and response text is **not** captured: `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`
-stays unset. Setting it would put user input and model output into the traces, unredacted.
+stays unset. Setting it would put user input and model output into the traces, unredacted, so
+whether to set it is a data-classification decision for each project, not a template default.
 
 **Our own exporter stays off when deployed.** `agent/observability.py` can export a span per
 `@instrument`ed call itself (`CLOUD_TRACE_ENABLED`, with `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID`).

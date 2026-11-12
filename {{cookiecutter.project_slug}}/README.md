@@ -171,6 +171,7 @@ exactly what to configure and where `setup-gcp`'s output goes.
 | `STATE_BUCKET` | No | OpenTofu state bucket; defaults to `$GOOGLE_CLOUD_PROJECT-agents-state` |
 | `MODEL_PROVIDER` | No | `google` \| `anthropic` \| `openai` \| `litellm` |
 | `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` | No | Set to `true` on deploy: Agent Engine's built-in tracing |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | No | Set to `gen_ai_latest_experimental` on deploy: fills the Agent Engine console's dashboard |
 | `CLOUD_TRACE_ENABLED` | No | Our own span exporter, local runs only (it fails under Agent Identity) |
 | `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID` | With `CLOUD_TRACE_ENABLED` | Project our exporter writes to |
 | `GOOGLE_API_KEY` | Local dev | Not needed on GCP (uses ADC) |
