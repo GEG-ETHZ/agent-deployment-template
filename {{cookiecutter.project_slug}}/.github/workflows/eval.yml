@@ -61,10 +61,13 @@ jobs:
 
       - name: Run promptfoo evaluation
         # --ci isn't a recognized promptfoo eval flag (checked against current --help).
-        # -o writes the output.json the next two steps read/upload. Deliberately not
-        # relying on this step's own exit code — verified empirically that promptfoo exits
-        # 0 even when every test case errors out (e.g. a bad API key), so pass/fail is
-        # enforced explicitly in "Enforce evaluation results" below instead.
+        # -o writes the output.json the next two steps read/upload. Pass/fail is decided
+        # by "Enforce evaluation results" below, not by this step's exit code: promptfoo
+        # exits 0 when cases error out, and 100 as soon as one case fails -- a grader
+        # that could not log in included. With 100 this step failed and the Enforce step
+        # was skipped, so the threshold and the "could not be graded" report never ran.
+        # PROMPTFOO_FAILED_TEST_EXIT_CODE=0 below turns that off; promptfoo still exits
+        # non-zero when it cannot run at all, and then there is no output.json.
         # `uv run` matters here: promptfoo's python:provider.py provider spawns its own
         # Python worker to import tests/evals/provider.py, which needs this project's
         # deps (python-dotenv, google-adk, ...) from .venv. Without `uv run`, that worker
@@ -79,6 +82,7 @@ jobs:
         run: uv run npx --yes promptfoo@0.123.1 eval --config tests/evals/promptfoo.yaml --no-progress-bar -j 2 -o output.json
         env:
           PROMPTFOO_DISABLE_TELEMETRY: "1"
+          PROMPTFOO_FAILED_TEST_EXIT_CODE: "0"
           # The ADK's OpenTelemetry instrumentation detaches a context token from a
           # different context than the one it was created in when driven from
           # promptfoo's async python worker, which raises

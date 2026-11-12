@@ -76,7 +76,9 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   `serviceUsageConsumer`, in the `dev` state only (`EVAL_STATE_ENV` moves it). It holds
   nothing on the engine or the buckets. `tests/evals/enforce.py` replaces the workflow's inline
   check and reports cases with `graderError` as "could not be graded" before errors and the
-  pass rate. `make eval` runs the same check and the same pinned promptfoo as CI.
+  pass rate. promptfoo's exit code 100 on a failed case no longer fails the run step first,
+  which had skipped that check. `make eval` runs the same check and the same pinned promptfoo
+  as CI.
 - **`make eval` says what it needs and costs** (#9). It checks its settings before the first
   model call and stops naming what is missing; the docs state the credentials and the calls a
   run makes. `make eval-check`, also part of `make test`, validates `promptfoo.yaml` and every

@@ -107,6 +107,13 @@ def test_local_and_ci_runs_use_the_same_promptfoo():
     assert pinned == [run_eval.PROMPTFOO_VERSION]
 
 
+def test_ci_leaves_the_verdict_to_enforce():
+    # Assert: promptfoo exits 100 when any case fails, which would fail the run step and
+    # skip the Enforce step, so neither the threshold nor the grader-error report ran.
+    assert 'PROMPTFOO_FAILED_TEST_EXIT_CODE: "0"' in EVAL_WORKFLOW
+    assert "tests/evals/enforce.py output.json" in EVAL_WORKFLOW
+
+
 def test_ci_eval_sends_no_api_key():
     # Assert: an API key in the environment would switch promptfoo's grader to express
     # mode on a promptfoo that ignores the config, and the agent to AI Studio.
