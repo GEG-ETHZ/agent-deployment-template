@@ -78,8 +78,11 @@ test:
 test-unit:
 	uv run pytest tests/unit -v
 
+# --no-cov: the integration tests alone cover far less than the 75% floor in pyproject.toml,
+# so the floor would fail this target even when every test passes. `make test` enforces it on
+# unit and integration together, as ci.yml does.
 test-integration:
-	uv run pytest tests/integration -v --tb=short
+	uv run pytest tests/integration -v --tb=short --no-cov
 
 eval:
 	uv run python tests/evals/run_eval.py

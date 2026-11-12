@@ -104,7 +104,7 @@ make dev                  # run at http://localhost:8000
 ### Run tests
 
 ```bash
-make test                 # unit tests with coverage
+make test                 # unit + integration tests, 75% coverage floor
 make eval                 # promptfoo red-team evaluation
 ```
 
@@ -138,8 +138,8 @@ exactly what to configure and where `setup-gcp`'s output goes.
 | Target | Description |
 |---|---|
 | `make dev` | Run agent locally at http://localhost:8000 |
-| `make test` | Unit tests with coverage |
-| `make test-integration` | Integration tests only |
+| `make test` | Unit and integration tests, with the 75% coverage floor |
+| `make test-integration` | Integration tests only, without the coverage floor |
 | `make eval` | Prompt security evaluation (promptfoo) |
 | `make lint` | Ruff lint check |
 | `make format` | Ruff formatter |
