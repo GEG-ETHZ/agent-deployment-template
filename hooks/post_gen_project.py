@@ -203,7 +203,7 @@ Next steps:
   2. cp .env.example .env
   3. Fill in API keys and GCP settings in .env
   4. make dev          # run the agent locally at http://localhost:8000
-  5. make test         # run unit tests
+  5. make test         # run unit and integration tests
   6. make setup-gcp    # one-time GCP bootstrap (when ready to deploy)
   7. make deploy-dev   # deploy to Agent Engine (dev)
 

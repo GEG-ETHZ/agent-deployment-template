@@ -104,7 +104,7 @@ make dev                  # run at http://localhost:8000
 ### Run tests
 
 ```bash
-make test                 # unit tests with coverage
+make test                 # unit + integration tests, 75% coverage floor
 make eval                 # promptfoo red-team evaluation
 ```
 
