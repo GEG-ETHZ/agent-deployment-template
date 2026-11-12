@@ -50,9 +50,9 @@ MAJOR/MINOR/PATCH and how releases are tagged.
 ### Added
 
 - The deployed agent also gets `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental`,
-  as Google's tracing setup for an `AdkApp` does. Without it, an agent deployed through the
-  API had traces in Cloud Trace but an empty Agent Engine console dashboard. Message content
-  capture stays off.
+  as Google's tracing setup for an `AdkApp` does. ADK 2.x already uses these GenAI semantic
+  conventions by default, so this pins them; it changes the spans on ADK 1.x or schema v1.
+  Message content capture stays off.
 - `make infra-apply`, `make infra-import`, `make infra-test` and `make deploy-code` in
   generated projects; `ci.yml` runs `make infra-test`, offline against a mocked provider.
 - The health check retries while new IAM grants propagate (`--attempts`).

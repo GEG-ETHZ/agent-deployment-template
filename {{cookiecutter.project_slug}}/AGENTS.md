@@ -104,7 +104,7 @@ Set `MODEL_PROVIDER` in `.env`:
 | `AGENT_ENGINE_RESOURCE_NAME` | Standalone `health-check` / `deploy.py` only | — | Engine to query or update. `make deploy-*` and `make rollback` set it from the OpenTofu output, so it does not belong in `.env` |
 | `STATE_BUCKET` | No | `$GOOGLE_CLOUD_PROJECT-agents-state` | OpenTofu state bucket shared by every agent of the project |
 | `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` | No | — | `deploy.py` sets `true` on the deployed agent: Agent Engine's built-in tracing |
-| `OTEL_SEMCONV_STABILITY_OPT_IN` | No | — | `deploy.py` sets `gen_ai_latest_experimental` on the deployed agent: what the Agent Engine console's dashboard reads |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | No | — | `deploy.py` sets `gen_ai_latest_experimental` on the deployed agent: the latest GenAI semantic conventions, as Google's `AdkApp` setup does |
 | `CLOUD_TRACE_ENABLED` | No | off | Our own span exporter, for local runs only — it fails under Agent Identity (see Observability) |
 | `OTEL_EXPORTER_GCP_TRACE_PROJECT_ID` | With `CLOUD_TRACE_ENABLED` | — | Project our span exporter writes to |
 | `MODEL_PROVIDER` | No | `google` | Provider selection |
@@ -552,7 +552,7 @@ for an `AdkApp` does:
 | Variable | Effect |
 |---|---|
 | `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` | `true`: the platform traces each request — model calls and tool calls under ADK's root span — into Cloud Trace. `make traces` lists roots only; use `read_traces.py --spans` to expand them. Without it the SDK sends `unspecified`, which an engine OpenTofu created resolves to disabled |
-| `OTEL_SEMCONV_STABILITY_OPT_IN` | `gen_ai_latest_experimental`: spans use the latest GenAI semantic conventions, which the Agent Engine console's dashboard and observability view read. Without it an agent deployed through the API gets traces in Cloud Trace but an empty console view |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | `gen_ai_latest_experimental`: spans use the latest GenAI semantic conventions. ADK 2.x already defaults to them (telemetry schema v2), so today this pins the default; it changes the spans only on ADK 1.x, or when `ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN=1` selects schema v1 |
 
 Prompt and response text is **not** captured: `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`
 stays unset. Setting it would put user input and model output into the traces, unredacted, so

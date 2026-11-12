@@ -114,9 +114,10 @@ class DeploymentConfig:
         """Environment variables set on the deployed container.
 
         Deliberately minimal. Logs need nothing here: Agent Engine forwards stdout.
-        Traces come from Agent Engine's built-in telemetry, and the latest GenAI
-        semantic conventions (OTEL_SEMCONV_STABILITY_OPT_IN) are what the Agent Engine
-        console's dashboard reads; Google's tracing setup for an AdkApp sets both. Our
+        Traces come from Agent Engine's built-in telemetry. OTEL_SEMCONV_STABILITY_OPT_IN
+        pins the latest GenAI semantic conventions, as Google's tracing setup for an
+        AdkApp does. ADK 2.x already defaults to them; the variable keeps them on for
+        ADK 1.x and when ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN selects schema v1. Our
         own Cloud Trace exporter (CLOUD_TRACE_ENABLED) stays off when deployed: under
         Agent Identity the access token is bound to the agent's certificate, and the
         exporter, which does not use mTLS, is rejected with 401. Prompt and response
