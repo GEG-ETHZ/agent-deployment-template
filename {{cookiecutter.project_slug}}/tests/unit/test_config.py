@@ -188,10 +188,14 @@ def test_runtime_env_vars_use_the_platforms_telemetry(required_deploy_env):
     """Logs need nothing -- Agent Engine forwards stdout. Traces come from Agent
     Engine's built-in telemetry: under Agent Identity the access token is bound to the
     agent's certificate, and our own Cloud Trace exporter, which does not use mTLS, is
-    rejected with 401 UNAUTHENTICATED."""
+    rejected with 401 UNAUTHENTICATED. The GenAI semantic-convention opt-in follows
+    Google's tracing setup for an AdkApp."""
     env_vars = DeploymentConfig.from_env().runtime_env_vars
 
-    assert env_vars == {"GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true"}
+    assert env_vars == {
+        "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
+        "OTEL_SEMCONV_STABILITY_OPT_IN": "gen_ai_latest_experimental",
+    }
 
 
 def test_runtime_env_vars_keep_our_exporter_and_message_capture_off(
