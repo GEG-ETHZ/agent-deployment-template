@@ -122,6 +122,48 @@ def test_every_case_ungraded_fails():
     assert "could not be graded" in verdict.errors[0]
 
 
+def test_grader_is_blamed_only_when_it_decides_the_outcome():
+    # Arrange: 18 pass, 2 ungraded -- with a working grader the run could pass
+    results = [_passing(f"case {n}") for n in range(18)]
+    results += [_ungraded("g1"), _ungraded("g2")]
+
+    # Act
+    verdict = enforce.judge(_output(results), threshold=0.95)
+
+    # Assert
+    assert not verdict.passed
+    assert "fix the grader, then re-run" in verdict.errors[-1]
+
+
+def test_agent_failures_are_named_when_the_grader_does_not_decide_it():
+    # Arrange: 16 pass, 3 agent failures, 1 ungraded -- 85% at best, still red
+    results = [_passing(f"case {n}") for n in range(16)]
+    results += [_failing(f"f{n}") for n in range(3)] + [_ungraded("g")]
+
+    # Act
+    verdict = enforce.judge(_output(results), threshold=0.95)
+
+    # Assert: the grader is still reported first, but not blamed for the red run
+    assert not verdict.passed
+    assert "could not be graded" in verdict.errors[0]
+    assert "fix the grader" not in verdict.errors[-1]
+    assert "85.00%" in verdict.errors[-1]
+    assert "the agent fails cases of its own" in verdict.errors[-1]
+
+
+def test_grader_errors_are_reported_before_errored_cases():
+    # Arrange
+    results = [_passing(f"case {n}") for n in range(18)] + [_ungraded("g")]
+
+    # Act
+    verdict = enforce.judge(_output(results, errors=1), threshold=0.95)
+
+    # Assert
+    assert not verdict.passed
+    assert "could not be graded" in verdict.errors[0]
+    assert "errored" in verdict.errors[-1]
+
+
 def test_grader_errors_are_counted_once_per_case():
     # Arrange
     results = [_ungraded("a"), _ungraded("b"), _failing("c")]

@@ -80,10 +80,10 @@ def judge(output: dict[str, Any], threshold: float) -> Verdict:
         return Verdict(
             passed=False,
             summary=summary,
-            errors=[
+            errors=grader_lines
+            + [
                 f"{errors} test case(s) errored (could not complete): treated as failing."
-            ]
-            + grader_lines,
+            ],
         )
     if total == 0:
         return Verdict(
@@ -94,15 +94,22 @@ def judge(output: dict[str, Any], threshold: float) -> Verdict:
             f"Pass rate {pass_rate:.2%} is below the required threshold "
             f"{threshold:.0%}."
         )
-        if ungraded:
-            # The grader is named first: fix its login or quota before reading the
-            # remaining failures as the agent's.
-            return Verdict(
-                passed=False,
-                summary=summary,
-                errors=grader_lines + [below + " Fix the grader, then re-run."],
+        if not ungraded:
+            return Verdict(passed=False, summary=summary, errors=[below])
+        # Blame the grader only if it decides the outcome: the run would have passed had
+        # every ungraded case passed. Otherwise the agent failed on its own as well, and
+        # a re-run with a working grader would still be red.
+        best_case = (successes + len(ungraded)) / total
+        if best_case >= threshold:
+            cause = " The ungraded cases decide it: fix the grader, then re-run."
+        else:
+            cause = (
+                f" Even if every ungraded case had passed, the pass rate would be "
+                f"{best_case:.2%}: the agent fails cases of its own as well."
             )
-        return Verdict(passed=False, summary=summary, errors=[below])
+        return Verdict(
+            passed=False, summary=summary, errors=grader_lines + [below + cause]
+        )
     return Verdict(passed=True, summary=summary, warnings=grader_lines)
 
 
