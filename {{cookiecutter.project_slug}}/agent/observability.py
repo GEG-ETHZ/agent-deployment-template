@@ -152,27 +152,65 @@ def _result_error(result: Any) -> str | None:
     and the turn does not fail. Without this, such a call would be logged as a success.
     Recognised shapes:
 
-    - a string starting with "ERROR" (e.g. "ERROR: table not found");
-    - a dict with a truthy "error" key, or with "status" == "error" (ADK's documented
-      tool convention, with the text in "error_message");
-    - any other object with a truthy `error` attribute (e.g. a Pydantic response model).
+    - a string starting with "ERROR:" (e.g. "ERROR: table not found");
+    - a dict whose "error" is error-like (see `_is_error_value`), or with
+      "status" == "error" (ADK's documented tool convention, with the text in
+      "error_message");
+    - any other object whose `error` attribute is error-like (e.g. a Pydantic
+      response model with `error: str | None`).
+
+    The text is PII-redacted before it is cut to `_MAX_ERROR_TEXT`, so a cut cannot
+    leave half an email address unredacted. This may raise on an unusual result (an
+    `error` property that raises, say); `_end` catches that.
     """
-    error: Any = None
+    candidate: Any = None
     if isinstance(result, str):
-        if result.startswith("ERROR"):
-            error = result
+        if result.startswith("ERROR:"):
+            candidate = result
     elif isinstance(result, dict):
-        if result.get("error"):
-            error = result["error"]
+        if _is_error_value(result.get("error")):
+            candidate = result["error"]
         elif result.get("status") == "error":
-            error = result.get("error_message") or "status: error"
-    elif not isinstance(result, (list, tuple, set, bytes, int, float, bool)):
+            candidate = result.get("error_message") or "status: error"
+    elif not isinstance(result, _NOT_RESPONSE_OBJECTS):
         attribute = getattr(result, "error", None)
-        if attribute and not callable(attribute):
-            error = attribute
-    if not error:
+        if _is_error_value(attribute):
+            candidate = attribute
+    if candidate is None:
         return None
-    return str(error)[:_MAX_ERROR_TEXT]
+    # An exception without a message still names a failure: fall back to its type.
+    text = redact_pii(str(candidate)) or type(candidate).__name__
+    return text[:_MAX_ERROR_TEXT]
+
+
+# Results that are data, never a response object with an `error` field.
+_NOT_RESPONSE_OBJECTS = (
+    list,
+    tuple,
+    set,
+    frozenset,
+    bytes,
+    bytearray,
+    int,
+    float,
+    complex,
+    bool,
+)
+
+
+def _is_error_value(value: Any) -> bool:
+    """Whether an `error` field holds an error, not data or a method.
+
+    Only a non-empty string, a non-empty dict (an error object such as
+    {"code": 404, "message": ...}) or an exception counts. A number does not: a
+    metric named `error` (e.g. {"error": 0.03, "rmse": 0.03}) is a result, not a
+    failure. Neither does a method, such as a logger's `error`.
+    """
+    if isinstance(value, BaseException):
+        return True
+    if isinstance(value, (str, dict)):
+        return bool(value)
+    return False
 
 
 def _set_span_attribute(span: Any, key: str, value: Any) -> None:
@@ -268,7 +306,12 @@ def instrument(func: F) -> F:
     def _end(start: float, span: Any, result: Any) -> None:
         duration_ms = (time.perf_counter() - start) * 1000
         _set_span_attribute(span, "duration_ms", round(duration_ms, 2))
-        error = _result_error(result)
+        try:
+            error = _result_error(result)
+        except Exception as inspect_exc:
+            # Telemetry must never turn a tool call that worked into an exception.
+            _warn(f"could not inspect the result of {func.__name__}: {inspect_exc}")
+            error = None
         if error is None:
             _set_span_attribute(span, "outcome", "success")
             log_event(

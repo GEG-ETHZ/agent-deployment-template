@@ -420,8 +420,20 @@ def captured_logs(monkeypatch):
         ({"status": "error", "error_message": "no such repo"}, "no such repo"),
         ({"status": "error"}, "status: error"),
         (ErrorResponse(error="permission denied"), "permission denied"),
+        (ErrorResponse(error=ValueError("bad input")), "bad input"),
+        ({"error": {"code": 404}}, "{'code': 404}"),
+        (ErrorResponse(error=TimeoutError()), "TimeoutError"),
     ],
-    ids=["error-string", "error-key", "adk-status", "adk-status-no-text", "attribute"],
+    ids=[
+        "error-string",
+        "error-key",
+        "adk-status",
+        "adk-status-no-text",
+        "attribute",
+        "attribute-exception",
+        "error-object",
+        "exception-without-message",
+    ],
 )
 def test_instrument_logs_an_error_shaped_result_as_a_failed_end(
     captured_logs, result, expected_error
@@ -451,6 +463,10 @@ def test_instrument_logs_an_error_shaped_result_as_a_failed_end(
         ["ERROR: inside a list is data, not the tool's status"],
         42,
         None,
+        "ERRORS: none found in the log",
+        {"error": 0.03, "rmse": 0.03},
+        ErrorResponse(error=0.12),
+        {"error": True},
     ],
     ids=[
         "plain-string",
@@ -462,6 +478,10 @@ def test_instrument_logs_an_error_shaped_result_as_a_failed_end(
         "list",
         "int",
         "none",
+        "errors-word-without-colon",
+        "numeric-error-metric",
+        "numeric-error-attribute",
+        "boolean-error-key",
     ],
 )
 def test_instrument_logs_a_normal_result_as_success(captured_logs, result):
@@ -511,6 +531,75 @@ def test_instrument_redacts_pii_in_returned_error_text(captured_logs):
     tool()
 
     assert captured_logs[1]["error"] == "no account for [REDACTED_EMAIL]"
+
+
+def test_instrument_redacts_before_truncating(captured_logs):
+    """An email across the length limit must not survive in part."""
+    text = "ERROR: " + "x" * 480 + " jane.doe@example.com"
+
+    @instrument
+    def tool():
+        return text
+
+    tool()
+
+    logged = captured_logs[1]["error"]
+    assert len(logged) == observability._MAX_ERROR_TEXT
+    assert "jane" not in logged
+    assert "@exa" not in logged
+    # 488 characters precede the placeholder, so the cut keeps its first 12.
+    assert logged.endswith(" [REDACTED_EM")
+
+
+def test_instrument_redacts_the_error_text_on_the_span(fake_tracer):
+    @instrument
+    def tool():
+        return {"error": "no account for jane@example.com"}
+
+    tool()
+
+    assert fake_tracer.spans["tool"].status.description == (
+        "no account for [REDACTED_EMAIL]"
+    )
+
+
+class RaisingErrorProperty:
+    @property
+    def error(self):
+        raise RuntimeError("lazy load failed")
+
+
+class UnprintableError:
+    def __str__(self):
+        raise ValueError("cannot render")
+
+
+def test_instrument_survives_an_error_property_that_raises(captured_logs, capsys):
+    """Telemetry must not break a tool call that worked."""
+    result = RaisingErrorProperty()
+
+    @instrument
+    def tool():
+        return result
+
+    assert tool() is result
+    assert captured_logs[1]["outcome"] == "success"
+    assert "lazy load failed" in capsys.readouterr().err
+
+
+def test_instrument_survives_an_error_value_that_cannot_be_rendered(
+    captured_logs, monkeypatch, capsys
+):
+    monkeypatch.setattr(observability, "_is_error_value", lambda value: True)
+    result = ErrorResponse(error=UnprintableError())
+
+    @instrument
+    def tool():
+        return result
+
+    assert tool() is result
+    assert captured_logs[1]["outcome"] == "success"
+    assert "could not inspect the result of tool" in capsys.readouterr().err
 
 
 async def test_instrument_logs_an_async_error_shaped_result_as_failed(captured_logs):

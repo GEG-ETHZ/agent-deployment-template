@@ -54,8 +54,10 @@ MAJOR/MINOR/PATCH and how releases are tagged.
 - The health check retries while new IAM grants propagate (`--attempts`).
 - `@instrument` logs a tool that returns an error instead of raising as failed: `<name>.end`
   with `outcome: "error"`, the error text and `severity: ERROR`, and a failed span. It
-  recognises a string starting with `ERROR`, a dict with a truthy `error` key or
-  `status: "error"` (ADK's convention), and an object with a truthy `error` attribute.
+  recognises a string starting with `ERROR:`, a dict whose `error` holds a string, a dict
+  or an exception, or `status: "error"` (ADK's convention), and an object with such an
+  `error` attribute. The error text is PII-redacted before it is cut to 500 characters, and
+  a result that cannot be inspected is logged as a success instead of failing the call.
   Before, every such call was logged as `outcome: success`. Log queries that treat every
   `.end` event as a success need the `outcome` field now.
 - `setup_gcp.sh` checks that the shared staging and state buckets exist, stopping and naming
