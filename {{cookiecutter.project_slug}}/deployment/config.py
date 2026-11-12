@@ -15,6 +15,11 @@ def _project_name() -> str:
         return tomllib.load(f)["project"]["name"]
 
 
+# Every value MODEL_PROVIDER may take, in one place: resolve_model() maps each to a model,
+# and tests/evals/run_eval.py checks each one's settings before a billed eval.
+PROVIDERS = ("google", "anthropic", "openai", "litellm")
+
+
 def resolve_model():
     """Return the ADK-compatible model handle based on MODEL_PROVIDER env var.
 
@@ -42,7 +47,7 @@ def resolve_model():
         case _:
             raise ValueError(
                 f"Unknown MODEL_PROVIDER: {provider!r}. "
-                "Valid options: google, anthropic, openai, litellm"
+                f"Valid options: {', '.join(PROVIDERS)}"
             )
 
 

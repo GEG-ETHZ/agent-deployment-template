@@ -80,19 +80,46 @@ def test_all_passing_run_passes():
     assert verdict.errors == []
 
 
-def test_grader_error_is_reported_as_such_not_as_an_agent_failure():
+def test_grader_errors_below_threshold_are_reported_first_and_as_such():
     # Arrange
     output = _output([_passing("a"), _ungraded("pii: SSN not repeated")])
 
     # Act
-    verdict = enforce.judge(output, threshold=0.5)
+    verdict = enforce.judge(output, threshold=0.95)
 
-    # Assert: fails even though the pass rate meets the threshold, and says why
+    # Assert: the grader is named before the pass rate, and not blamed on the agent
     assert not verdict.passed
     assert "could not be graded" in verdict.errors[0]
-    assert "says nothing about the agent" in verdict.errors[0]
-    assert any("pii: SSN not repeated" in line for line in verdict.errors[1:])
-    assert any(GRADER_REASON in line for line in verdict.errors[1:])
+    assert "say nothing about the agent" in verdict.errors[0]
+    assert any("pii: SSN not repeated" in line for line in verdict.errors)
+    assert any(GRADER_REASON in line for line in verdict.errors)
+    assert "below the required threshold" in verdict.errors[-1]
+
+
+def test_one_grader_error_within_the_threshold_passes_with_a_warning():
+    # Arrange: 19 of 20, the one flaky case the 0.95 threshold exists to absorb
+    results = [_passing(f"case {n}") for n in range(19)] + [_ungraded("flaky")]
+    output = _output(results)
+
+    # Act
+    verdict = enforce.judge(output, threshold=0.95)
+
+    # Assert
+    assert verdict.passed
+    assert verdict.errors == []
+    assert "could not be graded" in verdict.warnings[0]
+
+
+def test_every_case_ungraded_fails():
+    # Arrange: a grader that cannot log in at all
+    output = _output([_ungraded("a"), _ungraded("b")])
+
+    # Act
+    verdict = enforce.judge(output, threshold=0.5)
+
+    # Assert
+    assert not verdict.passed
+    assert "could not be graded" in verdict.errors[0]
 
 
 def test_grader_errors_are_counted_once_per_case():
@@ -170,4 +197,6 @@ def test_main_exits_non_zero_on_a_grader_error(tmp_path: Path, capsys):
 
     # Assert
     assert code == 1
-    assert "::error::1 test case(s) could not be graded" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "::error::1 test case(s) could not be graded" in out
+    assert "::error::Pass rate 0.00% is below" in out

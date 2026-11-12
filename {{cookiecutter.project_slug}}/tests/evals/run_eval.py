@@ -21,6 +21,11 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
+# Run as a script, this file's folder is on the path but the project root is not.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from deployment.config import PROVIDERS  # noqa: E402
+
 CONFIG = Path(__file__).parent / "promptfoo.yaml"
 ENFORCE = Path(__file__).parent / "enforce.py"
 
@@ -29,10 +34,13 @@ ENFORCE = Path(__file__).parent / "enforce.py"
 # runs, without a commit here.
 PROMPTFOO_VERSION = "0.123.1"
 
-# The API key each non-Google provider reads (through LiteLLM).
-PROVIDER_KEYS = {
+# The setting each non-Google provider needs: its API key (read by LiteLLM), or for
+# litellm the model string. Every provider in deployment.config.PROVIDERS other than
+# google has an entry (tests/unit/test_eval_suite.py checks it).
+PROVIDER_SETTINGS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "litellm": "LITELLM_MODEL",
 }
 
 
@@ -59,12 +67,15 @@ def missing_settings(env: Mapping[str, str]) -> list[str]:
                 "(Vertex AI with Application Default Credentials, as in .env.example) "
                 "or GOOGLE_API_KEY (AI Studio)."
             )
-    elif provider in PROVIDER_KEYS:
-        key = PROVIDER_KEYS[provider]
-        if not env.get(key):
-            missing.append(f"MODEL_PROVIDER={provider} needs {key}.")
-    elif provider == "litellm" and not env.get("LITELLM_MODEL"):
-        missing.append("MODEL_PROVIDER=litellm needs LITELLM_MODEL.")
+    elif provider in PROVIDER_SETTINGS:
+        setting = PROVIDER_SETTINGS[provider]
+        if not env.get(setting):
+            missing.append(f"MODEL_PROVIDER={provider} needs {setting}.")
+    else:
+        # resolve_model() would raise on it in every case: an empty value included.
+        missing.append(
+            f"MODEL_PROVIDER={provider!r} is not one of: {', '.join(PROVIDERS)}."
+        )
     return missing
 
 

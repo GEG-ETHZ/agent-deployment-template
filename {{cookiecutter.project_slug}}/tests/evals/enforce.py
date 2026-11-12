@@ -5,15 +5,16 @@ Usage:
     uv run python tests/evals/enforce.py output.json
 
 promptfoo's own exit code does not reflect errors, so eval.yml and `make eval` both call
-this instead. It fails a run for three reasons, checked in this order:
+this instead. A run fails when a test case errored (the agent was never judged), or when
+its pass rate is below the threshold in promptfoo.yaml.
 
-1. The grader could not run. When the model behind an `llm-rubric` assertion cannot be
-   called (no credentials, no permission, quota), promptfoo records a failed assertion
-   with `metadata.graderError` and counts it as an ordinary failure, not as an error.
-   Reported on its own, a red run then says "the grader could not log in" instead of
-   "the agent got worse".
-2. A test case errored, so the agent was never judged.
-3. The pass rate is below the threshold in promptfoo.yaml.
+Cases the grader could not judge are reported on their own. When the model behind an
+`llm-rubric` assertion cannot be called (no credentials, no permission, quota), promptfoo
+records a failed assertion with `metadata.graderError` and counts it as an ordinary
+failure. They still count as failures against the threshold, which exists to absorb one
+flaky case, so a single grader quota error does not fail a run on its own. But whenever
+there are any, they are named first: a red run that is red because of them says "the
+grader could not run" instead of "the agent got worse", and a green run warns.
 """
 
 import json
@@ -34,6 +35,7 @@ class Verdict:
     passed: bool
     summary: str
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def grader_errors(results: list[dict[str, Any]]) -> list[str]:
@@ -65,36 +67,43 @@ def judge(output: dict[str, Any], threshold: float) -> Verdict:
     )
 
     ungraded = grader_errors(output["results"].get("results") or [])
+    grader_lines = []
     if ungraded:
-        lines = [
+        grader_lines.append(
             f"{len(ungraded)} test case(s) could not be graded: the grader model call "
-            "failed (credentials, permission or quota). This says nothing about the "
-            "agent. Fix the grader's login, then re-run."
-        ]
-        lines.extend(f"  {line}" for line in ungraded)
-        return Verdict(passed=False, summary=summary, errors=lines)
+            "failed (credentials, permission or quota). They count as failures, but "
+            "say nothing about the agent."
+        )
+        grader_lines.extend(f"  {line}" for line in ungraded)
+
     if errors:
         return Verdict(
             passed=False,
             summary=summary,
             errors=[
                 f"{errors} test case(s) errored (could not complete): treated as failing."
-            ],
+            ]
+            + grader_lines,
         )
     if total == 0:
         return Verdict(
             passed=False, summary=summary, errors=["The run has no results."]
         )
     if pass_rate < threshold:
-        return Verdict(
-            passed=False,
-            summary=summary,
-            errors=[
-                f"Pass rate {pass_rate:.2%} is below the required threshold "
-                f"{threshold:.0%}."
-            ],
+        below = (
+            f"Pass rate {pass_rate:.2%} is below the required threshold "
+            f"{threshold:.0%}."
         )
-    return Verdict(passed=True, summary=summary)
+        if ungraded:
+            # The grader is named first: fix its login or quota before reading the
+            # remaining failures as the agent's.
+            return Verdict(
+                passed=False,
+                summary=summary,
+                errors=grader_lines + [below + " Fix the grader, then re-run."],
+            )
+        return Verdict(passed=False, summary=summary, errors=[below])
+    return Verdict(passed=True, summary=summary, warnings=grader_lines)
 
 
 def load_threshold(config: Path = CONFIG) -> float:
@@ -113,6 +122,8 @@ def main(argv: list[str]) -> int:
     print(verdict.summary)
     # `::error::` makes GitHub Actions show the line as an annotation; locally it is
     # just a prefix.
+    for line in verdict.warnings:
+        print(f"::warning::{line}")
     for line in verdict.errors:
         print(f"::error::{line}")
     return 0 if verdict.passed else 1

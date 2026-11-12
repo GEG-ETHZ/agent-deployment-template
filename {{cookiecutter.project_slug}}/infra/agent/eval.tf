@@ -25,9 +25,12 @@ locals {
 
   eval_principal = local.eval_enabled ? "principalSet://iam.googleapis.com/${data.google_iam_workload_identity_pool.github[0].name}/attribute.repository_environment/${var.github_repository}:eval" : null
 
-  # Role IDs allow letters, digits, `_` and `.`, up to 64 characters; agent_slug may hold
-  # hyphens. One role per agent, so two agents in a project never share an owner.
-  eval_role_id = substr("agentEval_${replace(var.agent_slug, "-", "_")}", 0, 64)
+  # One role per agent, so two agents in a project never share an owner. Role IDs allow
+  # letters, digits, `_` and `.`, up to 64 characters, so hyphens become `_` and long slugs
+  # are cut; that alone would give `my-agent` and `my_agent`, or two long slugs with one
+  # prefix, the same ID. A hash of the slug as given keeps them apart:
+  # 10 ("agentEval_") + 45 + 1 + 8 = 64 at most.
+  eval_role_id = "agentEval_${substr(replace(var.agent_slug, "-", "_"), 0, 45)}_${substr(sha1(var.agent_slug), 0, 8)}"
 }
 
 resource "google_project_iam_custom_role" "eval" {

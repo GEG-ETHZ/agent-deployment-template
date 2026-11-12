@@ -73,16 +73,18 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   through Workload Identity Federation as a new GitHub environment `eval`, with
   `GOOGLE_GENAI_USE_VERTEXAI=TRUE` and no API key; `infra/agent/eval.tf` grants that principal
   a per-agent custom role with only `aiplatform.endpoints.predict`, plus
-  `serviceUsageConsumer`, in the `dev` state only (`EVAL_STATE_ENV` moves it). It holds
-  nothing on the engine or the buckets. `tests/evals/enforce.py` replaces the workflow's inline
-  check and reports cases with `graderError` as "could not be graded" before errors and the
-  pass rate. promptfoo's exit code 100 on a failed case no longer fails the run step first,
+  `serviceUsageConsumer`, in the `dev` state only (`EVAL_STATE_ENV=prod` in `.env` moves it).
+  It holds nothing on the engine or the buckets. `tests/evals/enforce.py` replaces the
+  workflow's inline check. Cases with `graderError` still count against the threshold, so one
+  grader quota error is absorbed like any flaky case, but they are reported first, as "could
+  not be graded", instead of as agent failures. promptfoo's exit code 100 on a failed case no longer fails the run step first,
   which had skipped that check. `make eval` runs the same check and the same pinned promptfoo
   as CI.
 - **`make eval` says what it needs and costs** (#9). It checks its settings before the first
   model call and stops naming what is missing; the docs state the credentials and the calls a
   run makes. `make eval-check`, also part of `make test`, validates `promptfoo.yaml` and every
-  dataset line without a key or a model call.
+  dataset line without a key or a model call. An unknown or empty `MODEL_PROVIDER` is caught
+  there too; `deployment/config.py` now holds the one list of providers.
 
 ### Upgrading an existing project
 

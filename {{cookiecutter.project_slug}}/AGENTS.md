@@ -48,7 +48,9 @@ make deploy-dev          # OpenTofu: engine, identity, roles; then ship the code
 
 Deploying also needs [OpenTofu](https://opentofu.org) (`tofu` ≥ 1.8) on your path, and an
 account that may change project IAM (`roles/resourcemanager.projectIamAdmin` or owner), because
-OpenTofu grants the agent's identity its roles.
+OpenTofu grants the agent's identity its roles. Applying the state that grants the pull-request
+eval (dev, by default) also creates a custom role, which needs `roles/iam.roleAdmin` as well
+(owner has both).
 
 ### Make targets (use these, not raw commands)
 
@@ -453,9 +455,11 @@ Today that is 20 cases and 10 rubric assertions per run.
 check the suite itself without any of them, run `make eval-check`: it validates
 `promptfoo.yaml` and every dataset line, and runs as part of `make test` too.
 
-A run fails for one of three reasons, reported in this order by `tests/evals/enforce.py`: the
-grader could not run (credentials, permission or quota, so the agent was never judged), a case
-errored, or the pass rate is below the threshold in `promptfoo.yaml`.
+`tests/evals/enforce.py` fails a run when a case errored or the pass rate is below the
+threshold in `promptfoo.yaml`. Cases the grader could not judge (credentials, permission or
+quota) count as failures but are reported first and on their own, as "could not be graded":
+one of them within the threshold only warns, and a red run they caused says so instead of
+blaming the agent.
 
 ### The `eval` environment
 
@@ -465,13 +469,14 @@ logs in as a third GitHub Environment, `eval`, whose principal may only call mod
 
 | Grant | Scope | Why |
 |---|---|---|
-| custom role `agentEval_<agent>` with `aiplatform.endpoints.predict` | the project | the agent under test and the rubric grader call Gemini |
+| custom role `agentEval_<agent>_<hash>` with `aiplatform.endpoints.predict` | the project | the agent under test and the rubric grader call Gemini |
 | `roles/serviceusage.serviceUsageConsumer` | the project | bill those calls to the project; no data access |
 
 It holds nothing on the engine or on the staging and state buckets. `infra/agent/eval.tf` makes
 the grants, in the `dev` state only, so they are applied by `make infra-apply ENV=dev` and the
-eval runs and is billed in dev's project. A project with only `prod` applies it there instead:
-`make infra-apply ENV=prod EVAL_STATE_ENV=prod`.
+eval runs and is billed in dev's project. A project with only `prod` sets `EVAL_STATE_ENV=prod` in `.env`, so every apply of the prod
+state keeps the grants; passed once on the command line, the next `make deploy-prod` would
+delete them.
 
 Create the environment once (Settings → Environments → New environment → `eval`), with **no
 required reviewers and no deployment-branch rule**: pull-request runs come from feature
@@ -754,7 +759,9 @@ Run `cz bump` (via `uv run cz bump`) to cut a release and move unreleased entrie
   `make infra-import` first, or the first `make deploy-*` creates another engine next to it.
 - **Applying the grants needs project IAM rights.** `make infra-apply` adds project-level
   bindings, so the deployer needs `roles/resourcemanager.projectIamAdmin` or owner, on top
-  of what the deploy itself needs.
+  of what the deploy itself needs. The state that grants the eval (`infra/agent/eval.tf`) also
+  creates a custom role: that needs `roles/iam.roleAdmin` too, or `make deploy-dev` fails
+  with 403 on `iam.roles.create`.
 - **The shared buckets come from `geg-core-infra`, not from this repository.** `setup_gcp.sh`
   only checks that they exist and stops if one is missing. They are private with uniform
   bucket-level access, which CI needs: it logs in as a federated principal, and Cloud Storage

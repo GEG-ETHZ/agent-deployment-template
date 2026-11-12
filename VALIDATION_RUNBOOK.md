@@ -373,7 +373,7 @@ resources are **shared across every agent in the project**; the rest are per-age
 | Runtime identity | per-agent | the engine's Agent Identity (`spec.effective_identity`) |
 | CI principal | per-agent, per-environment | `principalSet://…/attribute.repository_environment/<org>/<repo>:<env>` |
 | Eval principal | per-agent, dev state only | `principalSet://…/attribute.repository_environment/<org>/<repo>:eval` |
-| Eval role | per-agent | custom role `agentEval_<project_slug>` (hyphens become `_`), `aiplatform.endpoints.predict` only |
+| Eval role | per-agent | custom role `agentEval_<project_slug>_<hash>` (hyphens become `_`, plus 8 hex of the slug's SHA-1), `aiplatform.endpoints.predict` only |
 | Dashboard | per-agent | `"<project_name> — Agent Engine"` |
 | Alert policies | per-agent | `"<project_name> — high error rate"` / `"— high p95 latency"` |
 
@@ -437,7 +437,10 @@ In each generated repo, create the environment once:
    branches; a rule limited to `main`, as on `prod`, blocks every one.
 3. Variables, the same values as `dev`'s: `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`,
    `GCP_WORKLOAD_IDENTITY_PROVIDER`.
-4. `make infra-apply ENV=dev` (or `ENV=prod EVAL_STATE_ENV=prod` for a project without dev).
+4. `make infra-apply ENV=dev`. For a project without dev, put `EVAL_STATE_ENV=prod` in `.env`
+   and run `make infra-apply ENV=prod`; passing it once on the command line would let the next
+   prod apply delete the grants. The applier also needs `roles/iam.roleAdmin` (or owner) for
+   the custom role.
 
 The repository secret `GOOGLE_API_KEY` is no longer read by any workflow and can be deleted.
 A red eval whose cases "could not be graded" is a login, permission or quota problem, not the

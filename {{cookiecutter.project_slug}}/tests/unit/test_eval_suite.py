@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from deployment.config import PROVIDERS
 from tests.evals import run_eval
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -150,6 +151,24 @@ def test_google_agent_without_credentials_is_reported():
     # Assert
     assert len(missing) == 1
     assert "GOOGLE_GENAI_USE_VERTEXAI=TRUE" in missing[0]
+
+
+@pytest.mark.parametrize("provider", ["gemini", ""])
+def test_unknown_or_empty_provider_is_reported(provider: str):
+    # Arrange: resolve_model() raises on both, so every case would error
+    env = {"GOOGLE_CLOUD_PROJECT": "p", "MODEL_PROVIDER": provider}
+
+    # Act
+    missing = run_eval.missing_settings(env)
+
+    # Assert
+    assert len(missing) == 1
+    assert "is not one of" in missing[0]
+
+
+def test_every_provider_has_a_settings_rule():
+    # Assert: a provider added to deployment/config.py must get its check here too
+    assert set(PROVIDERS) == {"google"} | set(run_eval.PROVIDER_SETTINGS)
 
 
 @pytest.mark.parametrize(

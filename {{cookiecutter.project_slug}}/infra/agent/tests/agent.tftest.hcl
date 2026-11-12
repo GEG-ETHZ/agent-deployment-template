@@ -305,10 +305,10 @@ run "eval_may_only_call_models" {
     error_message = "The eval role must hold aiplatform.endpoints.predict only."
   }
 
-  # Role IDs allow no hyphens.
+  # Role IDs allow no hyphens; the hash keeps `test-agent` and `test_agent` apart.
   assert {
-    condition     = google_project_iam_custom_role.eval[0].role_id == "agentEval_test_agent"
-    error_message = "The eval role ID must be agentEval_ plus the slug with underscores."
+    condition     = google_project_iam_custom_role.eval[0].role_id == "agentEval_test_agent_b8af647b"
+    error_message = "The eval role ID must be agentEval_, the slug with underscores, and the slug's hash."
   }
 
   assert {
@@ -373,4 +373,25 @@ run "eval_state_env_must_be_dev_or_prod" {
   }
 
   expect_failures = [var.eval_state_env]
+}
+
+# The longest slugs still give a valid role ID: at most 64 characters, and two slugs that
+# share their first 45 characters still differ.
+run "eval_role_id_fits_for_a_long_slug" {
+  command = plan
+
+  variables {
+    github_repository = "example-org/test-repo"
+    agent_slug        = "a-very-long-agent-name-that-goes-on-and-on-and-on-for-ever-1"
+  }
+
+  assert {
+    condition     = length(google_project_iam_custom_role.eval[0].role_id) <= 64 && can(regex("^[a-zA-Z0-9_.]+$", google_project_iam_custom_role.eval[0].role_id))
+    error_message = "The eval role ID must be at most 64 letters, digits, `_` or `.`."
+  }
+
+  assert {
+    condition     = google_project_iam_custom_role.eval[0].role_id != "agentEval_${substr("a_very_long_agent_name_that_goes_on_and_on_and_on_for_ever_2", 0, 45)}_${substr(sha1("a-very-long-agent-name-that-goes-on-and-on-and-on-for-ever-2"), 0, 8)}"
+    error_message = "Two long slugs with one prefix must not share a role ID."
+  }
 }

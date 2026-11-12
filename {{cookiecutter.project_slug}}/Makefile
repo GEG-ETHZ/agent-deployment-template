@@ -19,7 +19,8 @@ STAGING_BUCKET = $(patsubst gs://%,%,$(or $(GCS_STAGING_BUCKET),$(GOOGLE_CLOUD_P
 # Workload Identity pool: `make deploy-dev GITHUB_REPOSITORY=`.
 GITHUB_REPOSITORY := {{cookiecutter.github_org}}/{{cookiecutter.project_slug}}
 # The one state that grants the pull-request eval (infra/agent/eval.tf) its model calls.
-# Set it to prod only for a project without a dev environment.
+# For a project without a dev environment, set EVAL_STATE_ENV=prod in .env, not once on the
+# command line: every apply of the prod state without it would delete the eval's grants.
 EVAL_STATE_ENV ?= dev
 TOFU_VARS = -var="project_id=$(GOOGLE_CLOUD_PROJECT)" \
 	-var="region=$(GOOGLE_CLOUD_LOCATION)" \
