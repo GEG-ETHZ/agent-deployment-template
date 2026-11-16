@@ -129,6 +129,90 @@ def _record_span_error(span: Any, exc: Exception) -> None:
         _warn(f"could not record exception on span: {span_exc}")
 
 
+def _set_span_error_status(span: Any, message: str) -> None:
+    """Mark a span as failed without an exception, for a tool that returned an error."""
+    if span is None:
+        return
+    try:
+        from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+
+        span.set_status(Status(StatusCode.ERROR, message))
+    except Exception as span_exc:
+        _warn(f"could not set error status on span: {span_exc}")
+
+
+# Longest error text an error-shaped result contributes to a log line or span status.
+_MAX_ERROR_TEXT = 500
+
+
+def _result_error(result: Any) -> str | None:
+    """The error text of an error-shaped tool result, or None for a normal result.
+
+    Tools return errors to the model instead of raising, so the model can explain them
+    and the turn does not fail. Without this, such a call would be logged as a success.
+    Recognised shapes:
+
+    - a string starting with "ERROR:" (e.g. "ERROR: table not found");
+    - a dict whose "error" is error-like (see `_is_error_value`), or with
+      "status" == "error" (ADK's documented tool convention, with the text in
+      "error_message");
+    - any other object whose `error` attribute is error-like (e.g. a Pydantic
+      response model with `error: str | None`).
+
+    The text is PII-redacted before it is cut to `_MAX_ERROR_TEXT`, so a cut cannot
+    leave half an email address unredacted. This may raise on an unusual result (an
+    `error` property that raises, say); `_end` catches that.
+    """
+    candidate: Any = None
+    if isinstance(result, str):
+        if result.startswith("ERROR:"):
+            candidate = result
+    elif isinstance(result, dict):
+        if _is_error_value(result.get("error")):
+            candidate = result["error"]
+        elif result.get("status") == "error":
+            candidate = result.get("error_message") or "status: error"
+    elif not isinstance(result, _NOT_RESPONSE_OBJECTS):
+        attribute = getattr(result, "error", None)
+        if _is_error_value(attribute):
+            candidate = attribute
+    if candidate is None:
+        return None
+    # An exception without a message still names a failure: fall back to its type.
+    text = redact_pii(str(candidate)) or type(candidate).__name__
+    return text[:_MAX_ERROR_TEXT]
+
+
+# Results that are data, never a response object with an `error` field.
+_NOT_RESPONSE_OBJECTS = (
+    list,
+    tuple,
+    set,
+    frozenset,
+    bytes,
+    bytearray,
+    int,
+    float,
+    complex,
+    bool,
+)
+
+
+def _is_error_value(value: Any) -> bool:
+    """Whether an `error` field holds an error, not data or a method.
+
+    Only a non-empty string, a non-empty dict (an error object such as
+    {"code": 404, "message": ...}) or an exception counts. A number does not: a
+    metric named `error` (e.g. {"error": 0.03, "rmse": 0.03}) is a result, not a
+    failure. Neither does a method, such as a logger's `error`.
+    """
+    if isinstance(value, BaseException):
+        return True
+    if isinstance(value, (str, dict)):
+        return bool(value)
+    return False
+
+
 def _set_span_attribute(span: Any, key: str, value: Any) -> None:
     """Set one span attribute, best-effort, for the same reason as `_record_span_error`."""
     if span is None:
@@ -208,7 +292,9 @@ def instrument(func: F) -> F:
 
     Works on sync or async callables. Emits `<name>.start` / `.end` / `.error` log
     events and, when tracing is configured, wraps the call in a Cloud Trace span
-    named after the function. `functools.wraps` keeps the wrapped function's name,
+    named after the function. A raised exception gives `.error`; a returned
+    error-shaped result (see `_result_error`) gives `.end` with `outcome: "error"` at
+    ERROR severity and is returned unchanged. `functools.wraps` keeps the wrapped function's name,
     docstring, and signature intact via `__wrapped__`, so ADK's tool-schema
     introspection sees the original function unchanged.
     """
@@ -217,13 +303,29 @@ def instrument(func: F) -> F:
         log_event(f"{func.__name__}.start", {"args": args, "kwargs": kwargs})
         return time.perf_counter()
 
-    def _end(start: float, span: Any) -> None:
+    def _end(start: float, span: Any, result: Any) -> None:
         duration_ms = (time.perf_counter() - start) * 1000
-        _set_span_attribute(span, "outcome", "success")
         _set_span_attribute(span, "duration_ms", round(duration_ms, 2))
+        try:
+            error = _result_error(result)
+        except Exception as inspect_exc:
+            # Telemetry must never turn a tool call that worked into an exception.
+            _warn(f"could not inspect the result of {func.__name__}: {inspect_exc}")
+            error = None
+        if error is None:
+            _set_span_attribute(span, "outcome", "success")
+            log_event(
+                f"{func.__name__}.end",
+                {"duration_ms": round(duration_ms, 2), "outcome": "success"},
+            )
+            return
+        # The tool returned an error instead of raising: still a failed call.
+        _set_span_attribute(span, "outcome", "error")
+        _set_span_error_status(span, error)
         log_event(
             f"{func.__name__}.end",
-            {"duration_ms": round(duration_ms, 2), "outcome": "success"},
+            {"duration_ms": round(duration_ms, 2), "outcome": "error", "error": error},
+            severity="ERROR",
         )
 
     def _error(start: float, exc: Exception, span: Any) -> None:
@@ -248,7 +350,7 @@ def instrument(func: F) -> F:
                 except Exception as exc:
                     _error(start, exc, span)
                     raise
-                _end(start, span)
+                _end(start, span, result)
                 return result
 
         return _async_wrapper  # type: ignore[return-value]
@@ -262,7 +364,7 @@ def instrument(func: F) -> F:
             except Exception as exc:
                 _error(start, exc, span)
                 raise
-            _end(start, span)
+            _end(start, span, result)
             return result
 
     return _sync_wrapper  # type: ignore[return-value]

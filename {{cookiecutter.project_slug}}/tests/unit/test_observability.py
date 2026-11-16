@@ -386,3 +386,255 @@ async def test_instrument_records_async_exception_on_the_span_and_reraises(fake_
     span = fake_tracer.spans["boom"]
     assert span.attributes["outcome"] == "error"
     assert [str(exc) for exc in span.exceptions] == ["nope"]
+
+
+# Tools return errors to the model instead of raising. @instrument must still record
+# such a call as failed, and return the result unchanged.
+
+
+class ErrorResponse:
+    """Stands in for a tool's response model with an `error` field."""
+
+    def __init__(self, error=None, rows=None):
+        self.error = error
+        self.rows = rows or []
+
+
+@pytest.fixture
+def captured_logs(monkeypatch):
+    messages = []
+    monkeypatch.setattr(
+        "agent.observability.logger.info", lambda m: messages.append(json.loads(m))
+    )
+    monkeypatch.setattr(
+        "agent.observability.logger.error", lambda m: messages.append(json.loads(m))
+    )
+    return messages
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_error"),
+    [
+        ("ERROR: table not found", "ERROR: table not found"),
+        ({"error": "quota exceeded"}, "quota exceeded"),
+        ({"status": "error", "error_message": "no such repo"}, "no such repo"),
+        ({"status": "error"}, "status: error"),
+        (ErrorResponse(error="permission denied"), "permission denied"),
+        (ErrorResponse(error=ValueError("bad input")), "bad input"),
+        ({"error": {"code": 404}}, "{'code': 404}"),
+        (ErrorResponse(error=TimeoutError()), "TimeoutError"),
+    ],
+    ids=[
+        "error-string",
+        "error-key",
+        "adk-status",
+        "adk-status-no-text",
+        "attribute",
+        "attribute-exception",
+        "error-object",
+        "exception-without-message",
+    ],
+)
+def test_instrument_logs_an_error_shaped_result_as_a_failed_end(
+    captured_logs, result, expected_error
+):
+    @instrument
+    def tool():
+        return result
+
+    assert tool() is result
+
+    assert [m["event"] for m in captured_logs] == ["tool.start", "tool.end"]
+    end = captured_logs[1]
+    assert end["outcome"] == "error"
+    assert end["error"] == expected_error
+    assert end["severity"] == "ERROR"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        "2026-11-12T10:00:00+00:00",
+        "an error occurred earlier, but this answer is fine",
+        {"error": None, "rows": [1]},
+        {"error": "", "status": "success"},
+        {"status": "success"},
+        ErrorResponse(error=None, rows=[1]),
+        ["ERROR: inside a list is data, not the tool's status"],
+        42,
+        None,
+        "ERRORS: none found in the log",
+        {"error": 0.03, "rmse": 0.03},
+        ErrorResponse(error=0.12),
+        {"error": True},
+    ],
+    ids=[
+        "plain-string",
+        "lowercase-error-word",
+        "error-key-none",
+        "error-key-empty",
+        "adk-success",
+        "attribute-none",
+        "list",
+        "int",
+        "none",
+        "errors-word-without-colon",
+        "numeric-error-metric",
+        "numeric-error-attribute",
+        "boolean-error-key",
+    ],
+)
+def test_instrument_logs_a_normal_result_as_success(captured_logs, result):
+    @instrument
+    def tool():
+        return result
+
+    tool()
+
+    end = captured_logs[1]
+    assert end["outcome"] == "success"
+    assert "error" not in end
+    assert end["severity"] == "INFO"
+
+
+def test_instrument_ignores_an_error_method(captured_logs):
+    """An object whose `error` is a method, not a value, is a normal result."""
+
+    class Logger:
+        def error(self, message):
+            return message
+
+    @instrument
+    def tool():
+        return Logger()
+
+    tool()
+
+    assert captured_logs[1]["outcome"] == "success"
+
+
+def test_instrument_truncates_long_error_text(captured_logs):
+    @instrument
+    def tool():
+        return "ERROR: " + "x" * 2000
+
+    tool()
+
+    assert len(captured_logs[1]["error"]) == observability._MAX_ERROR_TEXT
+
+
+def test_instrument_redacts_pii_in_returned_error_text(captured_logs):
+    @instrument
+    def tool():
+        return {"error": "no account for jane@example.com"}
+
+    tool()
+
+    assert captured_logs[1]["error"] == "no account for [REDACTED_EMAIL]"
+
+
+def test_instrument_redacts_before_truncating(captured_logs):
+    """An email across the length limit must not survive in part."""
+    text = "ERROR: " + "x" * 480 + " jane.doe@example.com"
+
+    @instrument
+    def tool():
+        return text
+
+    tool()
+
+    logged = captured_logs[1]["error"]
+    assert len(logged) == observability._MAX_ERROR_TEXT
+    assert "jane" not in logged
+    assert "@exa" not in logged
+    # 488 characters precede the placeholder, so the cut keeps its first 12.
+    assert logged.endswith(" [REDACTED_EM")
+
+
+def test_instrument_redacts_the_error_text_on_the_span(fake_tracer):
+    @instrument
+    def tool():
+        return {"error": "no account for jane@example.com"}
+
+    tool()
+
+    assert fake_tracer.spans["tool"].status.description == (
+        "no account for [REDACTED_EMAIL]"
+    )
+
+
+class RaisingErrorProperty:
+    @property
+    def error(self):
+        raise RuntimeError("lazy load failed")
+
+
+class UnprintableError:
+    def __str__(self):
+        raise ValueError("cannot render")
+
+
+def test_instrument_survives_an_error_property_that_raises(captured_logs, capsys):
+    """Telemetry must not break a tool call that worked."""
+    result = RaisingErrorProperty()
+
+    @instrument
+    def tool():
+        return result
+
+    assert tool() is result
+    assert captured_logs[1]["outcome"] == "success"
+    assert "lazy load failed" in capsys.readouterr().err
+
+
+def test_instrument_survives_an_error_value_that_cannot_be_rendered(
+    captured_logs, monkeypatch, capsys
+):
+    monkeypatch.setattr(observability, "_is_error_value", lambda value: True)
+    result = ErrorResponse(error=UnprintableError())
+
+    @instrument
+    def tool():
+        return result
+
+    assert tool() is result
+    assert captured_logs[1]["outcome"] == "success"
+    assert "could not inspect the result of tool" in capsys.readouterr().err
+
+
+async def test_instrument_logs_an_async_error_shaped_result_as_failed(captured_logs):
+    @instrument
+    async def tool():
+        return {"status": "error", "error_message": "timed out"}
+
+    assert await tool() == {"status": "error", "error_message": "timed out"}
+
+    end = captured_logs[1]
+    assert end["event"] == "tool.end"
+    assert end["outcome"] == "error"
+    assert end["error"] == "timed out"
+
+
+def test_instrument_marks_the_span_failed_for_an_error_shaped_result(fake_tracer):
+    @instrument
+    def tool():
+        return "ERROR: table not found"
+
+    tool()
+
+    span = fake_tracer.spans["tool"]
+    assert span.attributes["outcome"] == "error"
+    assert "duration_ms" in span.attributes
+    assert span.exceptions == []
+    assert span.status is not None
+    assert span.status.description == "ERROR: table not found"
+
+
+def test_span_error_status_failure_is_reported_not_raised(capsys):
+    class BrokenSpan:
+        def set_status(self, status):
+            raise RuntimeError("exporter gone")
+
+    observability._set_span_error_status(BrokenSpan(), "ERROR: x")
+
+    assert "could not set error status on span" in capsys.readouterr().err
