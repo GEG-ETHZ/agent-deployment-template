@@ -85,6 +85,9 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   run makes. `make eval-check`, also part of `make test`, validates `promptfoo.yaml` and every
   dataset line without a key or a model call. An unknown or empty `MODEL_PROVIDER` is caught
   there too; `deployment/config.py` now holds the one list of providers.
+- `make test-integration` no longer fails when its tests pass. The 75% coverage floor in
+  `pyproject.toml` applied to the integration tests alone (about 30%); the target now runs
+  with `--no-cov`, as `ci.yml` does, and `make test` still enforces the floor.
 
 ### Upgrading an existing project
 

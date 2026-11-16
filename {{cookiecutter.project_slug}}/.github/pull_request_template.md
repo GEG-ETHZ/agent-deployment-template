@@ -8,7 +8,7 @@
 
 ## Test plan
 
-- [ ] Unit tests pass (`make test`)
+- [ ] Unit and integration tests pass (`make test`)
 - [ ] Linting passes (`make lint`)
 - [ ] Type check passes (`make typecheck`)
 - [ ] Promptfoo eval passes (`make eval`) — for prompt or tool changes

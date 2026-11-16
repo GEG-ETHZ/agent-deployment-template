@@ -104,7 +104,7 @@ make dev                  # run at http://localhost:8000
 ### Run tests
 
 ```bash
-make test                 # unit tests with coverage
+make test                 # unit + integration tests, 75% coverage floor
 make eval-check           # check the eval suite: no key, no model call
 make eval                 # promptfoo red-team evaluation: real model calls, billed; needs ADC
 ```
@@ -139,8 +139,8 @@ exactly what to configure and where `setup-gcp`'s output goes.
 | Target | Description |
 |---|---|
 | `make dev` | Run agent locally at http://localhost:8000 |
-| `make test` | Unit tests with coverage |
-| `make test-integration` | Integration tests only |
+| `make test` | Unit and integration tests, with the 75% coverage floor |
+| `make test-integration` | Integration tests only, without the coverage floor |
 | `make eval` | Prompt security evaluation (promptfoo): real model calls billed to `GOOGLE_CLOUD_PROJECT`, needs `gcloud auth application-default login` |
 | `make eval-check` | Check the eval config and datasets without a key or a model call |
 | `make lint` | Ruff lint check |

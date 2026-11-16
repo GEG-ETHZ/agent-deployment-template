@@ -57,9 +57,9 @@ eval (dev, by default) also creates a custom role, which needs `roles/iam.roleAd
 | Target | What it does |
 |---|---|
 | `make dev` | Run agent locally at http://localhost:8000 |
-| `make test` | Unit tests with coverage |
+| `make test` | Unit and integration tests, with the 75% coverage floor |
 | `make test-unit` | Unit tests only, verbose |
-| `make test-integration` | Integration tests only |
+| `make test-integration` | Integration tests only, without the coverage floor |
 | `make eval` | promptfoo red-team evaluation: real model calls, billed (see [Running the eval](#running-the-eval)) |
 | `make eval-check` | Check the eval config and datasets: no key, no model call |
 | `make lint` | ruff lint check |
