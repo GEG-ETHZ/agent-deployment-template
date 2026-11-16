@@ -1,53 +1,135 @@
 #!/usr/bin/env python3
-"""Local evaluation runner with human-readable output.
+"""Local evaluation runner: what `make eval` runs.
 
 Usage:
     uv run python tests/evals/run_eval.py
 
-This is a convenience wrapper around `make eval` (npx promptfoo).
-Use it for quick local runs without needing Node.js promptfoo output parsing.
+The eval calls real models and is billed: each of the suite's cases runs the agent
+(Gemini 2.5 Pro by default, one or more calls per case), and each `llm-rubric` assertion
+makes one Gemini 2.5 Flash call to grade it. The grader always runs on Vertex AI with
+Application Default Credentials (`gcloud auth application-default login`), in
+GOOGLE_CLOUD_PROJECT. To check the suite's config and datasets without a key or a
+login, run `make eval-check` instead.
+
+The run is judged by tests/evals/enforce.py, the same check eval.yml applies in CI.
 """
 
 import os
 import subprocess
 import sys
+import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
+# Run as a script, this file's folder is on the path but the project root is not.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from deployment.config import PROVIDERS  # noqa: E402
+
 CONFIG = Path(__file__).parent / "promptfoo.yaml"
+ENFORCE = Path(__file__).parent / "enforce.py"
+
+# Keep in step with eval.yml (tests/unit/test_eval_suite.py checks it). An unpinned npx
+# resolves at run time, so a promptfoo release could change local results, or what
+# runs, without a commit here.
+PROMPTFOO_VERSION = "0.123.1"
+
+# The setting each non-Google provider needs: its API key (read by LiteLLM), or for
+# litellm the model string. Every provider in deployment.config.PROVIDERS other than
+# google has an entry (tests/unit/test_eval_suite.py checks it).
+PROVIDER_SETTINGS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "litellm": "LITELLM_MODEL",
+}
+
+
+def _is_true(value: str | None) -> bool:
+    return (value or "").strip().lower() in ("true", "1")
+
+
+def missing_settings(env: Mapping[str, str]) -> list[str]:
+    """Return one line per setting the eval needs and `env` lacks; empty when complete."""
+    missing = []
+    if not env.get("GOOGLE_CLOUD_PROJECT"):
+        missing.append(
+            "GOOGLE_CLOUD_PROJECT is not set. The rubric grader calls Gemini on Vertex AI "
+            "in this project, with Application Default Credentials "
+            "(gcloud auth application-default login)."
+        )
+    provider = env.get("MODEL_PROVIDER", "google").lower()
+    if provider == "google":
+        if not _is_true(env.get("GOOGLE_GENAI_USE_VERTEXAI")) and not env.get(
+            "GOOGLE_API_KEY"
+        ):
+            missing.append(
+                "The agent has no Gemini credentials: set GOOGLE_GENAI_USE_VERTEXAI=TRUE "
+                "(Vertex AI with Application Default Credentials, as in .env.example) "
+                "or GOOGLE_API_KEY (AI Studio)."
+            )
+    elif provider in PROVIDER_SETTINGS:
+        setting = PROVIDER_SETTINGS[provider]
+        if not env.get(setting):
+            missing.append(f"MODEL_PROVIDER={provider} needs {setting}.")
+    else:
+        # resolve_model() would raise on it in every case: an empty value included.
+        missing.append(
+            f"MODEL_PROVIDER={provider!r} is not one of: {', '.join(PROVIDERS)}."
+        )
+    return missing
 
 
 def main() -> None:
-    print("Running promptfoo evaluation...")
-    print(f"Config: {CONFIG}\n")
-
-    # Get the current environment to pass to promptfoo
+    # The Makefile exports .env, so this sees the same settings as `make dev`.
     env = os.environ.copy()
+    missing = missing_settings(env)
+    if missing:
+        print("make eval cannot run yet:", file=sys.stderr)
+        for line in missing:
+            print(f"  - {line}", file=sys.stderr)
+        print(
+            "To check the suite without credentials, run `make eval-check`.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    print("Running promptfoo evaluation (real model calls, billed to your project)...")
+    print(f"Config: {CONFIG}\n")
 
     # Ensure promptfoo can access the current Python environment
     env["PYTHONPATH"] = str(Path(__file__).parent.parent.parent)
 
     # Disable OpenTelemetry to avoid context errors in the ADK
     env["OTEL_SDK_DISABLED"] = "true"
+    env["PROMPTFOO_DISABLE_TELEMETRY"] = "1"
 
-    result = subprocess.run(
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "output.json"
         # -j 2 matches eval.yml. promptfoo defaults to 4, which runs enough parallel
         # agent and grader calls to trip Vertex quota; the model then answers a
         # benign prompt with a "try again later" string and the suite fails for a
         # reason that has nothing to do with the agent.
-        [
-            "npx",
-            "--yes",
-            "promptfoo@latest",
-            "eval",
-            "--config",
-            str(CONFIG),
-            "-j",
-            "2",
-        ],
-        capture_output=False,
-        env=env,
-    )
-    sys.exit(result.returncode)
+        result = subprocess.run(
+            [
+                "npx",
+                "--yes",
+                f"promptfoo@{PROMPTFOO_VERSION}",
+                "eval",
+                "--config",
+                str(CONFIG),
+                "-j",
+                "2",
+                "-o",
+                str(output),
+            ],
+            capture_output=False,
+            env=env,
+        )
+        if not output.exists():
+            sys.exit(result.returncode or 1)
+        # promptfoo's exit code says nothing about errored or ungraded cases.
+        verdict = subprocess.run([sys.executable, str(ENFORCE), str(output)])
+    sys.exit(verdict.returncode)
 
 
 if __name__ == "__main__":

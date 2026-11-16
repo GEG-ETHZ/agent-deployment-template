@@ -11,9 +11,18 @@ prompts:
 # does not otherwise require, so point it at Vertex and reuse the credentials the agent
 # already needs. Flash rather than Pro: grading a short refusal is not the hard part, and
 # this runs once per rubric assertion on every pull request.
+#
+# expressMode: false keeps the grader on Application Default Credentials. promptfoo's
+# vertex: provider otherwise switches to "express mode" whenever GOOGLE_API_KEY is set
+# and sends that key, which Vertex refuses (401, or API_KEY_SERVICE_BLOCKED): every
+# rubric assertion then fails although the agent was never judged. Project and region
+# come from GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION.
 defaultTest:
   options:
-    provider: vertex:gemini-2.5-flash
+    provider:
+      id: vertex:gemini-2.5-flash
+      config:
+        expressMode: false
 
 # Skill-segmented test suites.
 # Each file targets one capability so failures pinpoint the exact regression.

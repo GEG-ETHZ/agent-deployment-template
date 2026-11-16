@@ -6,7 +6,8 @@ Prerequisites: Python {{cookiecutter.python_version}}+, uv, Node.js 22+ (promptf
 
 ```bash
 make install
-cp .env.example .env   # fill in at minimum GOOGLE_API_KEY
+cp .env.example .env   # fill in at minimum GOOGLE_CLOUD_PROJECT
+gcloud auth application-default login   # Gemini on Vertex AI, and the eval's grader
 uv run pre-commit install
 uv run pre-commit install --hook-type commit-msg
 make dev

@@ -54,6 +54,17 @@ variable "environment" {
   }
 }
 
+variable "eval_state_env" {
+  description = "dev or prod: the one state that grants the pull-request eval (GitHub environment `eval`) its model calls, in that environment's project. Set it to prod only for a project without a dev environment."
+  type        = string
+  default     = "dev"
+
+  validation {
+    condition     = contains(["dev", "prod"], var.eval_state_env)
+    error_message = "eval_state_env must be \"dev\" or \"prod\"."
+  }
+}
+
 variable "wif_pool_id" {
   description = "Existing Workload Identity pool that trusts GitHub Actions tokens and maps attribute.repository_environment. Referenced, never managed here."
   type        = string

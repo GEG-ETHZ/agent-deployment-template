@@ -221,14 +221,20 @@ make install
 make lint
 make typecheck        # pyright, generated project — not covered by `make validate`
 make test              # unit + integration, with coverage
-make eval              # promptfoo — needs GOOGLE_API_KEY (or the provider set in .env) exported
+make eval-check        # the eval suite's config and datasets — no key, no model call
+make eval              # promptfoo — real model calls, billed; needs ADC and GOOGLE_CLOUD_PROJECT
 make pre-commit
 ```
 
-`make eval` needs an API key for whichever `MODEL_PROVIDER` you generated with (default
-`google` → `GOOGLE_API_KEY`). If you don't want to spend a key on this pass, skip it here —
-it's exercised again in Phase 2 below regardless, and CI's `eval.yml` gates PRs to
-generated repos, not this one.
+`make eval` calls real models, billed to `GOOGLE_CLOUD_PROJECT`: the agent once or more per
+case (20 cases), and the rubric grader once per `llm-rubric` assertion (10). The grader always
+runs on Vertex AI with Application Default Credentials (`gcloud auth application-default
+login`), whatever `MODEL_PROVIDER` is; with the default `google` provider the agent uses the
+same login (`GOOGLE_GENAI_USE_VERTEXAI=TRUE`, the `.env.example` default). `make eval` checks
+those settings first and stops naming what is missing. If you don't want to spend model calls
+on this pass, run only `make eval-check` here, which needs nothing — the full eval is
+exercised again in Phase 2 below regardless, and CI's `eval.yml` gates PRs to generated
+repos, not this one.
 
 **Why this matters:** `make pre-commit` on a freshly generated project is what catches bugs
 `make validate` alone won't — a freshly generated project failing its own hook set is a real,
@@ -366,6 +372,8 @@ resources are **shared across every agent in the project**; the rest are per-age
 | Agent Engine resource | per-agent | display name = `project_slug`, created by `infra/agent/` |
 | Runtime identity | per-agent | the engine's Agent Identity (`spec.effective_identity`) |
 | CI principal | per-agent, per-environment | `principalSet://…/attribute.repository_environment/<org>/<repo>:<env>` |
+| Eval principal | per-agent, dev state only | `principalSet://…/attribute.repository_environment/<org>/<repo>:eval` |
+| Eval role | per-agent | custom role `agentEval_<project_slug>_<hash>` (hyphens become `_`, plus 8 hex of the slug's SHA-1), `aiplatform.endpoints.predict` only |
 | Dashboard | per-agent | `"<project_name> — Agent Engine"` |
 | Alert policies | per-agent | `"<project_name> — high error rate"` / `"— high p95 latency"` |
 
@@ -412,6 +420,31 @@ GitHub issues that claim only after the environment's protection rules have pass
 workflow on a feature branch that names none gets nothing.
 
 CI never runs `tofu apply`. It reads the engine name from the state and ships code to it.
+
+### The PR eval logs in as the `eval` environment
+
+`eval.yml` runs the agent and its rubric grader on Vertex AI, through the same pool, as a
+third GitHub environment, `eval`. `prod` would put every pull request behind prod's reviewers,
+and a repository-wide grant would match any workflow on any branch. `infra/agent/eval.tf`
+grants the `eval` principal a per-agent custom role with only `aiplatform.endpoints.predict`,
+plus `serviceUsageConsumer`; nothing on the engine or the buckets. Only the `dev` state makes
+these grants (`make infra-apply ENV=dev`), so the eval runs and bills in dev's project.
+
+In each generated repo, create the environment once:
+
+1. Settings → Environments → New environment → `eval`.
+2. **No required reviewers, no deployment-branch rule.** Pull-request runs come from feature
+   branches; a rule limited to `main`, as on `prod`, blocks every one.
+3. Variables, the same values as `dev`'s: `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`,
+   `GCP_WORKLOAD_IDENTITY_PROVIDER`.
+4. `make infra-apply ENV=dev`. For a project without dev, put `EVAL_STATE_ENV=prod` in `.env`
+   and run `make infra-apply ENV=prod`; passing it once on the command line would let the next
+   prod apply delete the grants. The applier also needs `roles/iam.roleAdmin` (or owner) for
+   the custom role.
+
+The repository secret `GOOGLE_API_KEY` is no longer read by any workflow and can be deleted.
+A red eval whose cases "could not be graded" is a login, permission or quota problem, not the
+agent: check the three variables and that the dev state was applied.
 
 ### Generate a fresh project
 
