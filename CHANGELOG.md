@@ -64,6 +64,12 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   ships the code with `make deploy-code`.
 - `validate-template.yml` and `make validate` run the generated project's OpenTofu checks.
 
+### Fixed
+
+- `make test-integration` no longer fails when its tests pass. The 75% coverage floor in
+  `pyproject.toml` applied to the integration tests alone (about 30%); the target now runs
+  with `--no-cov`, as `ci.yml` does, and `make test` still enforces the floor.
+
 ### Upgrading an existing project
 
 The engine is re-created, so the agent gets a new resource ID and a new identity. Prerequisites

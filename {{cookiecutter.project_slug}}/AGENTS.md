@@ -55,9 +55,9 @@ OpenTofu grants the agent's identity its roles.
 | Target | What it does |
 |---|---|
 | `make dev` | Run agent locally at http://localhost:8000 |
-| `make test` | Unit tests with coverage |
+| `make test` | Unit and integration tests, with the 75% coverage floor |
 | `make test-unit` | Unit tests only, verbose |
-| `make test-integration` | Integration tests only |
+| `make test-integration` | Integration tests only, without the coverage floor |
 | `make eval` | promptfoo red-team evaluation |
 | `make lint` | ruff lint check |
 | `make format` | ruff format |
