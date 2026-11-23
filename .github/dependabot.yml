@@ -23,11 +23,13 @@ updates:
       actions:
         patterns: ["*"]
 
-  # `directory`, not `directories`: the latter reads globs, and the braces in the folder
-  # name must stay literal. For any folder other than `/`, Dependabot reads the workflow
-  # files in that folder itself.
+  # Dependabot reads the braces in {{cookiecutter.project_slug}} as a glob and rejects them
+  # under `directory`, so `directories` matches the folder with `*` instead. Only the
+  # template folder has workflows at that depth. For any folder other than `/`, Dependabot
+  # reads the workflow files in that folder itself.
   - package-ecosystem: github-actions
-    directory: "/{{cookiecutter.project_slug}}/.github/workflows"
+    directories:
+      - "/*/.github/workflows"
     schedule:
       interval: monthly
     commit-message:
