@@ -109,15 +109,15 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   both layers referenced actions by tag, which the action's owner can move to other code.
   Each `uses:` now names a full commit SHA with the release as a comment
   (`@<sha> # v7.0.1`), which Dependabot keeps up to date. The template's own
-  `dependabot.yml` gains a second github-actions entry for the generated workflows, which it
-  never read before, so the pins a new project starts from move too. Each pin is the newest release at
-  least seven days old, the same hold the `uv` updates use. `setup-uv` moves from v4 to v10,
-  which no longer prunes its cache by default, so the Actions cache can grow somewhat.
+  `dependabot.yml` now scans the generated workflows as well as its own, in one
+  github-actions entry, so the pins a new project starts from move too. Each pin is the
+  newest release at least seven days old, the same hold the `uv` updates use. `setup-uv`
+  moves from v4 to v10, which no longer prunes its cache by default, so the Actions cache can
+  grow somewhat.
 - **Dependabot waits seven days before offering a new action release, and a TruffleHog bump
-  can no longer leave the old scanner running.** Both `dependabot.yml` files now set
-  `cooldown: default-days: 7` on github-actions, the hold the uv updates already had. The
-  template's own config uses one github-actions entry for both layers instead of two that
-  opened overlapping pull requests. Dependabot moves TruffleHog's SHA and `# vX` comment but
+  fails CI until the scanner image matches.** Both `dependabot.yml` files now set
+  `cooldown: default-days: 7` on github-actions, up from GitHub's default of three days and
+  the same hold the uv updates have. Dependabot moves TruffleHog's SHA and `# vX` comment but
   not the `version:` input that picks the scanner image; a new unit test,
   `tests/unit/test_workflows.py`, fails until the two match.
 
