@@ -4,10 +4,14 @@ version: 2
 # than a drip of single-dependency PRs nobody reads. Security updates are not affected by
 # the schedule: they still arrive as soon as an advisory is published.
 #
-# Only the template's own root is scanned. The generated layer under
-# {{cookiecutter.project_slug}}/ cannot be: its directory name is an unrendered Jinja
-# expression and its pyproject.toml has Jinja in requires-python, so no ecosystem parser
-# can read it. Generated projects get their own dependabot.yml, shipped as a template file.
+# For pre-commit and uv only the template's own root is scanned. The generated layer under
+# {{cookiecutter.project_slug}}/ cannot be: its pyproject.toml has Jinja in requires-python,
+# so no parser can read it. Generated projects get their own dependabot.yml, shipped as a
+# template file.
+#
+# GitHub Actions is the exception: the generated workflows are plain YAML, and every action
+# in them is pinned to a commit SHA, which would otherwise never move. The second entry
+# keeps those pins current, so a newly generated project starts from current actions.
 updates:
   - package-ecosystem: github-actions
     directory: /
@@ -17,6 +21,21 @@ updates:
       prefix: ci
     groups:
       actions:
+        patterns: ["*"]
+
+  # Dependabot reads the braces in {{cookiecutter.project_slug}} as a glob and rejects them
+  # under `directory`, so `directories` matches the folder with `*` instead. Only the
+  # template folder has workflows at that depth. For any folder other than `/`, Dependabot
+  # reads the workflow files in that folder itself.
+  - package-ecosystem: github-actions
+    directories:
+      - "/*/.github/workflows"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci
+    groups:
+      template-actions:
         patterns: ["*"]
 
   - package-ecosystem: pre-commit

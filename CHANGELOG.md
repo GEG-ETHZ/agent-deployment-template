@@ -101,6 +101,19 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   `pyproject.toml` applied to the integration tests alone (about 30%); the target now runs
   with `--no-cov`, as `ci.yml` does, and `make test` still enforces the floor.
 
+### Security
+
+- **Every GitHub Action in both layers is on its current major and pinned to a commit SHA**
+  (#12). The generated workflows still ran `checkout@v4`, `setup-python@v5`, `setup-uv@v4`,
+  `auth@v2`, `codeql-action@v3` and others, built for the deprecated Node 20 runtime, and
+  both layers referenced actions by tag, which the action's owner can move to other code.
+  Each `uses:` now names a full commit SHA with the release as a comment
+  (`@<sha> # v7.0.1`), which Dependabot keeps up to date. The template's own
+  `dependabot.yml` gains a second github-actions entry for the generated workflows, which it
+  never read before, so the pins a new project starts from move too. Each pin is the newest release at
+  least seven days old, the same hold the `uv` updates use. `setup-uv` moves from v4 to v10,
+  which no longer prunes its cache by default, so the Actions cache can grow somewhat.
+
 ### Upgrading an existing project
 
 For the eval fix alone (#1): after `cruft update`, create the GitHub environment `eval` with no
