@@ -39,7 +39,9 @@ describes how to report those.
 **In generated projects** (the workflows and hooks under `{{cookiecutter.project_slug}}/`):
 
 - `detect-secrets` runs as a pre-commit hook against a committed baseline
-- TruffleHog scans the full git history on every push to `main`, pinned to a commit SHA
+- TruffleHog scans the full git history on every push to `main`
+- Every GitHub Action is pinned to a full commit SHA, so a moved or compromised tag cannot
+  change what runs; Dependabot moves the pins, in this repository and in each generated one
 - CodeQL static analysis runs on every push to `main`
 - `pip-audit` runs on every push to `main` and weekly
 - Every workflow declares a read-only `GITHUB_TOKEN` and widens scope per job
@@ -50,6 +52,8 @@ describes how to report those.
   hooks
 - CI lints and type-checks the generation hooks, and `validate-template.yml` generates a
   project from four variable combinations and runs that project's own checks against it
+- Every GitHub Action in its own workflows is pinned to a full commit SHA, as in generated
+  projects
 
 The template repository does **not** run CodeQL, TruffleHog or `pip-audit` on itself. It
 has no runtime dependencies of its own, and its scanning story is the hook set above.
@@ -63,9 +67,6 @@ Tracked publicly rather than treated as undisclosed:
   projects authenticate to GCP with a long-lived key held as a repository secret. Workload
   Identity Federation is the fix; until then, rotate that key and treat it as a standing
   risk.
-- [#23](https://github.com/danielvogler/agent-deployment-template/issues/23) — actions are
-  pinned by tag rather than commit SHA, so a compromised or moved tag would execute here.
-  No mutable refs remain.
 
 ## Credential handling
 
