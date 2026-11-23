@@ -78,7 +78,7 @@ jobs:
       GCS_STAGING_BUCKET: "{% raw %}${{ vars.GCS_STAGING_BUCKET }}{% endraw %}"
       MODEL_PROVIDER: "{% raw %}${{ vars.MODEL_PROVIDER || 'google' }}{% endraw %}"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: "{% raw %}${{ github.event.inputs.ref || github.event.workflow_run.head_sha || github.sha }}{% endraw %}"
 
@@ -86,23 +86,23 @@ jobs:
       # APIs see this repository in this job's environment as the caller. Its grants are in
       # infra/agent/ci.tf.
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: "{% raw %}${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}{% endraw %}"
           project_id: "{% raw %}${{ vars.GOOGLE_CLOUD_PROJECT }}{% endraw %}"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "{{cookiecutter.python_version}}"
 
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           ignore-nothing-to-cache: true
 
       # Only to read the engine name from the state; CI never applies.
-      - uses: opentofu/setup-opentofu@v1
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: "1.13.2"
           # The wrapper adds output to `tofu output -raw`, which the Makefile captures.
