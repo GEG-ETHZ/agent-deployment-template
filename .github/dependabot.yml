@@ -10,32 +10,25 @@ version: 2
 # template file.
 #
 # GitHub Actions is the exception: the generated workflows are plain YAML, and every action
-# in them is pinned to a commit SHA, which would otherwise never move. The second entry
-# keeps those pins current, so a newly generated project starts from current actions.
+# in them is pinned to a commit SHA, which would otherwise never move. One entry keeps the
+# pins in both layers current, so a newly generated project starts from current actions.
 updates:
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: monthly
-    commit-message:
-      prefix: ci
-    groups:
-      actions:
-        patterns: ["*"]
-
-  # Dependabot reads the braces in {{cookiecutter.project_slug}} as a glob and rejects them
-  # under `directory`, so `directories` matches the folder with `*` instead. Only the
-  # template folder has workflows at that depth. For any folder other than `/`, Dependabot
-  # reads the workflow files in that folder itself.
+  # `/*/.github/workflows` matches the template folder and, as Dependabot's first run
+  # showed, the root `.github/workflows` too: one grouped pull request bumps both layers.
+  # A literal `{{cookiecutter.project_slug}}` path is rejected, because Dependabot reads the
+  # braces as a glob and `directory` allows none.
   - package-ecosystem: github-actions
     directories:
       - "/*/.github/workflows"
     schedule:
       interval: monthly
+    # Same hold as uv below: a bad release has seven days to be pulled before it is offered.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: ci
     groups:
-      template-actions:
+      actions:
         patterns: ["*"]
 
   - package-ecosystem: pre-commit
