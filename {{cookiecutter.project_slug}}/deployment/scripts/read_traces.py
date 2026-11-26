@@ -9,11 +9,19 @@ Usage:
     uv run python deployment/scripts/read_traces.py
     uv run python deployment/scripts/read_traces.py --spans
     uv run python deployment/scripts/read_traces.py --since 6h --limit 50
-    uv run python deployment/scripts/read_traces.py --filter "span:web_search"
+    uv run python deployment/scripts/read_traces.py --tool web_search
+    uv run python deployment/scripts/read_traces.py --filter "root:invoke_workflow"
 
 `gcloud` has no `trace` command group, so this calls the Cloud Trace v1 REST API
 with Application Default Credentials. Unfiltered by default: Cloud Trace has no
-per-agent label, so narrow with `--filter "span:<tool_name>"`.
+per-agent label, so other services in the project show up too. Narrow with:
+
+- `--filter "root:invoke_workflow"`: this agent's traces only.
+- `--tool <tool_name>`: traces in which that tool was called. The tool spans come
+  from the platform's tracing of ADK and are named `execute_tool <tool_name>`, so
+  the filter is `span:"execute_tool <tool_name>"`. On a deployed agent the bare tool
+  name as a span filter matches nothing. Cloud Trace matches the start of the span
+  name, so `--tool web` also finds `web_search`.
 """
 
 from __future__ import annotations
@@ -36,6 +44,11 @@ READONLY_SCOPE = "https://www.googleapis.com/auth/trace.readonly"
 
 _DURATION_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
 _DURATION_PATTERN = re.compile(r"^(\d+)([smhd])$")
+
+# The platform's tracing of ADK names each tool call's span "execute_tool <tool_name>".
+TOOL_SPAN_PREFIX = "execute_tool"
+# A Python function name: nothing that could end the quoted filter value or add a term.
+_TOOL_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def parse_duration(value: str) -> timedelta:
@@ -68,7 +81,7 @@ def build_params(
         "pageSize": limit,
         # ROOTSPAN returns each trace's root span only -- enough to list what ran,
         # without pulling every child span of every trace. COMPLETE is what surfaces
-        # the @instrument tool spans, which are children of ADK's invoke_workflow.
+        # the tool spans (`execute_tool <name>`), children of ADK's invoke_workflow.
         "view": "COMPLETE" if spans else "ROOTSPAN",
         "orderBy": "start desc",
     }
@@ -77,11 +90,51 @@ def build_params(
     return params
 
 
+def tool_filter(tool_name: str) -> str:
+    """Return the Cloud Trace filter for traces in which `tool_name` was called.
+
+    The span is named `execute_tool <tool_name>`. The name holds a space, so it has to
+    be quoted; unquoted, Cloud Trace reads the second word as a term of its own.
+    `span:` matches the start of a span name, so tools whose names begin with
+    `tool_name` are found too.
+    """
+    name = tool_name.strip()
+    if not _TOOL_NAME.fullmatch(name):
+        raise ValueError(
+            f"Invalid tool name '{tool_name}': use the function name, "
+            "for example web_search."
+        )
+    return f'span:"{TOOL_SPAN_PREFIX} {name}"'
+
+
+def no_match_hint(tool: str | None, trace_filter: str | None) -> str | None:
+    """Return what to try next when a narrowed listing matched nothing, or None.
+
+    Only two cases have something to say: `--tool` found no call of that tool, and a
+    hand-written `span:` filter that does not name the `execute_tool` span.
+    """
+    if tool is not None:
+        return (
+            f"No tool whose name starts with '{tool.strip()}' was called in this "
+            "window. Check the name, or widen --since."
+        )
+    if (
+        trace_filter
+        and "span:" in trace_filter
+        and TOOL_SPAN_PREFIX not in trace_filter
+    ):
+        return (
+            f"Tool spans are named '{TOOL_SPAN_PREFIX} <tool_name>': "
+            "use --tool <tool_name> to filter by tool."
+        )
+    return None
+
+
 def format_trace(trace: dict[str, Any], spans: bool = False) -> str:
     """Render one trace from the API response.
 
     One line by default; with `spans`, an extra indented line per span so the
-    `@instrument` tool spans nested under ADK's root span are visible.
+    tool spans nested under ADK's root span are visible.
     """
     trace_id = trace.get("traceId", "?")
     trace_spans = trace.get("spans") or []
@@ -120,11 +173,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--limit", type=int, default=20, help="Max traces to return (default: 20)"
     )
-    parser.add_argument(
+    narrowing = parser.add_mutually_exclusive_group()
+    narrowing.add_argument(
         "--filter",
         dest="trace_filter",
         default=None,
-        help='Cloud Trace filter, e.g. "span:web_search"',
+        help='Cloud Trace filter, e.g. "root:invoke_workflow" for this agent only',
+    )
+    narrowing.add_argument(
+        "--tool",
+        default=None,
+        help="Only traces in which a tool whose name starts with this was called, "
+        "e.g. web_search",
     )
     parser.add_argument(
         "--spans",
@@ -139,16 +199,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        params = build_params(
-            args.since, args.limit, args.trace_filter, spans=args.spans
+        # `is not None`: an empty --tool, as from an unset shell variable, must be
+        # refused and not turn into an unfiltered listing.
+        trace_filter = (
+            tool_filter(args.tool) if args.tool is not None else args.trace_filter
         )
+        params = build_params(args.since, args.limit, trace_filter, spans=args.spans)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
     print(f"Cloud Trace for {project} (last {args.since}, limit {args.limit})")
-    if args.trace_filter:
-        print(f"  filter: {args.trace_filter}")
+    if trace_filter:
+        print(f"  filter: {trace_filter}")
     print("")
 
     traces = fetch_traces(project, params)
@@ -165,6 +228,10 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "with the current deploy.py, which sets it, then invoke a tool and retry."
         )
+        hint = no_match_hint(args.tool, args.trace_filter)
+        if hint:
+            print("")
+            print(hint)
 
     print("")
     print(f"Console: {console_url(project)}")

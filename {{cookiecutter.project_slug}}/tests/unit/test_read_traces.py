@@ -15,7 +15,9 @@ from deployment.scripts.read_traces import (
     console_url,
     format_trace,
     main,
+    no_match_hint,
     parse_duration,
+    tool_filter,
 )
 
 FIXED_NOW = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
@@ -204,3 +206,149 @@ def test_format_trace_shows_only_the_root_by_default():
 
     assert len(line.splitlines()) == 1
     assert "get_current_datetime" not in line
+
+
+def test_tool_filter_quotes_the_span_name_the_platform_writes():
+    # Act
+    result = tool_filter("web_search")
+
+    # Assert: unquoted, Cloud Trace reads the tool name as a second term and
+    # matches nothing
+    assert result == 'span:"execute_tool web_search"'
+
+
+def test_tool_filter_ignores_surrounding_whitespace():
+    assert tool_filter(" web_search ") == 'span:"execute_tool web_search"'
+
+
+@pytest.mark.parametrize(
+    "name", ["", "  ", 'x" root:other', "web search", "span:web_search", "1st"]
+)
+def test_tool_filter_rejects_anything_but_a_function_name(name):
+    with pytest.raises(ValueError, match="Invalid tool name"):
+        tool_filter(name)
+
+
+def test_main_sends_the_tool_filter_for_the_tool_option(monkeypatch, capsys):
+    # Arrange
+    sent = {}
+
+    def fake_fetch(project, params):
+        sent.update(params)
+        return []
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "my-project")
+    monkeypatch.setattr("deployment.scripts.read_traces.fetch_traces", fake_fetch)
+
+    # Act
+    exit_code = main(["--tool", "web_search"])
+
+    # Assert
+    assert exit_code == 0
+    assert sent["filter"] == 'span:"execute_tool web_search"'
+    assert 'filter: span:"execute_tool web_search"' in capsys.readouterr().out
+
+
+def test_main_fails_on_an_invalid_tool_name_without_calling_the_api(
+    monkeypatch, capsys
+):
+    # Arrange
+    def must_not_be_called(project, params):
+        raise AssertionError("the API was called")
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "my-project")
+    monkeypatch.setattr(
+        "deployment.scripts.read_traces.fetch_traces", must_not_be_called
+    )
+
+    # Act
+    exit_code = main(["--tool", "web search"])
+
+    # Assert
+    assert exit_code == 1
+    assert "Invalid tool name" in capsys.readouterr().err
+
+
+def test_main_refuses_a_filter_together_with_a_tool(monkeypatch):
+    # Arrange
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "my-project")
+
+    # Act / Assert: two ways to narrow would leave it unclear which one applies
+    with pytest.raises(SystemExit):
+        main(["--tool", "web_search", "--filter", "root:invoke_workflow"])
+
+
+def test_main_points_to_the_tool_option_when_a_bare_span_filter_matched_nothing(
+    monkeypatch, capsys
+):
+    # Arrange
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "my-project")
+    monkeypatch.setattr(
+        "deployment.scripts.read_traces.fetch_traces", lambda project, params: []
+    )
+
+    # Act
+    main(["--filter", "span:web_search"])
+
+    # Assert
+    assert "use --tool <tool_name>" in capsys.readouterr().out
+
+
+def test_main_says_the_tool_was_not_called_when_the_tool_option_matched_nothing(
+    monkeypatch, capsys
+):
+    # Arrange
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "my-project")
+    monkeypatch.setattr(
+        "deployment.scripts.read_traces.fetch_traces", lambda project, params: []
+    )
+
+    # Act
+    main(["--tool", "web_search"])
+
+    # Assert: the reader already used --tool, so they are not told to use it
+    output = capsys.readouterr().out
+    assert "No tool whose name starts with 'web_search' was called" in output
+    assert "use --tool <tool_name>" not in output
+
+
+@pytest.mark.parametrize(
+    "trace_filter",
+    [None, "root:invoke_workflow", 'span:"execute_tool web_search"'],
+)
+def test_no_match_hint_is_silent_when_the_filter_is_not_a_bare_span_filter(
+    trace_filter,
+):
+    assert no_match_hint(None, trace_filter) is None
+
+
+def test_main_refuses_an_empty_tool_name_without_calling_the_api(monkeypatch, capsys):
+    # Arrange: as from --tool "$TOOL" with the variable unset
+    def must_not_be_called(project, params):
+        raise AssertionError("the API was called")
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "my-project")
+    monkeypatch.setattr(
+        "deployment.scripts.read_traces.fetch_traces", must_not_be_called
+    )
+
+    # Act
+    exit_code = main(["--tool", ""])
+
+    # Assert: not an unfiltered listing
+    assert exit_code == 1
+    assert "Invalid tool name" in capsys.readouterr().err
+
+
+def test_main_gives_no_filter_hint_when_no_filter_was_set(monkeypatch, capsys):
+    # Arrange
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "my-project")
+    monkeypatch.setattr(
+        "deployment.scripts.read_traces.fetch_traces", lambda project, params: []
+    )
+
+    # Act
+    main([])
+
+    # Assert
+    assert "--tool <tool_name>" not in capsys.readouterr().out
