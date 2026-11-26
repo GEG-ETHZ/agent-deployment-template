@@ -623,7 +623,7 @@ for an `AdkApp` does:
 
 | Variable | Effect |
 |---|---|
-| `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` | `true`: the platform traces each request — model calls and tool calls under ADK's root span — into Cloud Trace. `make traces` lists roots only; use `read_traces.py --spans` to expand them. Without it the SDK sends `unspecified`, which an engine OpenTofu created resolves to disabled |
+| `GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY` | `true`: the platform traces each request — model calls and tool calls under ADK's root span — into Cloud Trace. `make traces` lists roots only; use `read_traces.py --spans` to expand them, `--tool <tool_name>` for the traces in which a tool was called (its span is named `execute_tool <tool_name>`; the name is matched from its start), and `--filter "root:invoke_workflow"` to leave out other services' traces in the project. Without it the SDK sends `unspecified`, which an engine OpenTofu created resolves to disabled |
 | `OTEL_SEMCONV_STABILITY_OPT_IN` | `gen_ai_latest_experimental`: spans use the latest GenAI semantic conventions. ADK 2.x already defaults to them (telemetry schema v2), so today this pins the default; it changes the spans only on ADK 1.x, or when `ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN=1` selects schema v1 |
 
 Prompt and response text is **not** captured: `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`
