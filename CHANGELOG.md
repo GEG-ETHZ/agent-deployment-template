@@ -82,7 +82,7 @@ MAJOR/MINOR/PATCH and how releases are tagged.
   `--filter "span:<tool_name>"`, which matches nothing on a deployed agent: the tool spans
   come from the platform's tracing of ADK and are named `execute_tool <tool_name>`. The new
   `--tool <tool_name>` option builds that filter (the name is matched from its start), the
-  help names `root:invoke_workflow` for the agent's own traces, and a narrowed listing that
+  help names `root:invoke_workflow` for ADK agents' traces only, and a narrowed listing that
   matched nothing says what to try next.
 
 - **The pull-request eval can log in, and a grader that cannot is no longer read as a worse

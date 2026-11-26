@@ -45,8 +45,9 @@ re-run the relevant section whenever `{{cookiecutter.project_slug}}/` changes.
   deletes complete but the process never exits. Use `gcloud storage rm -r`, or drop `-m`. Do
   not conclude the deletes failed — verify with `ls` after interrupting.
 - **Tool spans are *children* of ADK's `invoke_workflow` root span**, so a `view=ROOTSPAN`
-  trace listing never shows them. `read_traces.py --spans` expands them; `--filter
-  "span:<tool>"` selects traces containing one.
+  trace listing never shows them. `read_traces.py --spans` expands them; `--tool
+  <tool>` selects traces containing one (the span is named `execute_tool <tool>`, so a
+  bare `--filter "span:<tool>"` matches nothing on a deployed agent).
 - **The requirements warning is non-deterministic** — one deploy can report a different
   missing-package count than another for identical code. Only `cloudpickle` is auto-appended;
   the rest are satisfied transitively.

@@ -16,7 +16,8 @@ Usage:
 with Application Default Credentials. Unfiltered by default: Cloud Trace has no
 per-agent label, so other services in the project show up too. Narrow with:
 
-- `--filter "root:invoke_workflow"`: this agent's traces only.
+- `--filter "root:invoke_workflow"`: ADK agents' traces only. It leaves out other
+  services; other ADK agents in the same project still show up.
 - `--tool <tool_name>`: traces in which that tool was called. The tool spans come
   from the platform's tracing of ADK and are named `execute_tool <tool_name>`, so
   the filter is `span:"execute_tool <tool_name>"`. On a deployed agent the bare tool
@@ -47,8 +48,9 @@ _DURATION_PATTERN = re.compile(r"^(\d+)([smhd])$")
 
 # The platform's tracing of ADK names each tool call's span "execute_tool <tool_name>".
 TOOL_SPAN_PREFIX = "execute_tool"
-# A Python function name: nothing that could end the quoted filter value or add a term.
-_TOOL_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# A tool name: a function name, or an MCP tool name with dashes or dots. Nothing that
+# could end the quoted filter value or add a term (no quote, space or colon).
+_TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 
 
 def parse_duration(value: str) -> timedelta:
@@ -101,7 +103,7 @@ def tool_filter(tool_name: str) -> str:
     name = tool_name.strip()
     if not _TOOL_NAME.fullmatch(name):
         raise ValueError(
-            f"Invalid tool name '{tool_name}': use the function name, "
+            f"Invalid tool name '{tool_name}': use the tool's name alone, "
             "for example web_search."
         )
     return f'span:"{TOOL_SPAN_PREFIX} {name}"'
@@ -178,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         "--filter",
         dest="trace_filter",
         default=None,
-        help='Cloud Trace filter, e.g. "root:invoke_workflow" for this agent only',
+        help='Cloud Trace filter, e.g. "root:invoke_workflow" for ADK agents only',
     )
     narrowing.add_argument(
         "--tool",

@@ -155,7 +155,7 @@ def test_main_explains_an_empty_result(monkeypatch, capsys):
 # --- --spans: tool spans are children of ADK's root span ---------------------
 #
 # Verified against a live deployment: a request produces `invoke_workflow root_agent`
-# as the root, with the @instrument span nested several levels below it. The default
+# as the root, with the tool span nested several levels below it. The default
 # ROOTSPAN view therefore never shows the spans this tooling exists to surface.
 
 
@@ -217,14 +217,20 @@ def test_tool_filter_quotes_the_span_name_the_platform_writes():
     assert result == 'span:"execute_tool web_search"'
 
 
+@pytest.mark.parametrize("name", ["resolve-library-id", "ns.tool", "tool2"])
+def test_tool_filter_accepts_tool_names_with_dashes_dots_and_digits(name):
+    # MCP tools are not always named like Python functions
+    assert tool_filter(name) == f'span:"execute_tool {name}"'
+
+
 def test_tool_filter_ignores_surrounding_whitespace():
     assert tool_filter(" web_search ") == 'span:"execute_tool web_search"'
 
 
 @pytest.mark.parametrize(
-    "name", ["", "  ", 'x" root:other', "web search", "span:web_search", "1st"]
+    "name", ["", "  ", 'x" root:other', "web search", "span:web_search", "a/b"]
 )
-def test_tool_filter_rejects_anything_but_a_function_name(name):
+def test_tool_filter_rejects_anything_but_a_tool_name(name):
     with pytest.raises(ValueError, match="Invalid tool name"):
         tool_filter(name)
 
